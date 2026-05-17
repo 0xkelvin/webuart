@@ -29,6 +29,9 @@ npm install
 npm run dev
 ```
 
+<img width="1370" height="951" alt="image" src="https://github.com/user-attachments/assets/a2bcae06-30a4-4951-89f7-66ff336ed94a" />
+
+
 Open the shown localhost URL in Chrome/Edge.
 
 ## Build
