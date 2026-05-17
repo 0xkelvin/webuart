@@ -1,0 +1,299 @@
+:root {
+  --bg: #09131d;
+  --bg-grad-a: #0f2436;
+  --bg-grad-b: #071019;
+  --panel: #f7f9fc;
+  --panel-border: #cfd8e6;
+  --text: #0f2136;
+  --subtle: #4b5f78;
+  --term-bg: #050b14;
+  --term-fg: #d7f4ff;
+  --accent: #0ea5e9;
+  --accent-strong: #0284c7;
+  --danger: #c62828;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 10% 0%, var(--bg-grad-a), var(--bg-grad-b));
+  min-height: 100svh;
+}
+
+#app {
+  min-height: 100svh;
+  padding: clamp(0.45rem, 1vw, 0.9rem);
+}
+
+.layout {
+  width: 100%;
+  margin: 0;
+  display: grid;
+  gap: 0.75rem;
+  min-height: calc(100svh - 1.5rem);
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 0.8rem;
+  box-shadow: 0 14px 30px rgb(0 0 0 / 25%);
+}
+
+label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--subtle);
+  display: grid;
+  gap: 0.3rem;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid #b7c4d8;
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  background: #fff;
+  color: var(--text);
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.nameControls {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.nameControls input {
+  min-width: 8rem;
+  width: clamp(8rem, 16vw, 14rem);
+  padding: 0.48rem 0.6rem;
+}
+
+.exportControl {
+  position: relative;
+  display: inline-flex;
+}
+
+.exportMenu {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  display: grid;
+  gap: 0.35rem;
+  min-width: 10rem;
+  padding: 0.45rem;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: #ffffff;
+  box-shadow: 0 16px 28px rgb(0 0 0 / 16%);
+  z-index: 5;
+}
+
+.menuItem {
+  border: 0;
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  background: #eef4fb;
+  color: var(--text);
+  text-align: left;
+}
+
+.menuItem:hover {
+  background: #dfeaf6;
+}
+
+button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.52rem 1rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.03);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #fff;
+}
+
+.ghost {
+  background: #e7eef8;
+  color: var(--text);
+}
+
+#disconnectBtn:not(:disabled) {
+  background: #ffe5e5;
+  color: var(--danger);
+}
+
+.status {
+  margin: 0.65rem 0 0;
+  color: var(--subtle);
+  font-size: 0.92rem;
+  white-space: pre-line;
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.08rem;
+}
+
+.inlineToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.terminal {
+  margin: 0;
+  min-height: calc(100svh - 220px);
+  max-height: calc(100svh - 220px);
+  overflow: auto;
+  border-radius: 8px;
+  border: 1px solid #1b3648;
+  background: var(--term-bg);
+  color: var(--term-fg);
+  padding: 0.75rem;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rxCard {
+  padding: 0.6rem;
+}
+
+.txPanel {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.txPanel.collapsed {
+  display: none;
+}
+
+.txRow {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+  align-items: end;
+}
+
+.settingsPanel {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  border-radius: 0;
+  border: 0;
+  width: 100%;
+  min-height: 100svh;
+  max-height: 100svh;
+  overflow: auto;
+  background: #f4f8ff;
+  padding: 1rem;
+}
+
+.settingsPanel .grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.settingsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.hidden {
+  display: none;
+}
+
+@media (max-width: 980px) {
+  .actions {
+    gap: 0.4rem;
+  }
+
+  button {
+    padding: 0.48rem 0.85rem;
+  }
+
+  .txRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .terminal {
+    min-height: calc(100svh - 280px);
+    max-height: calc(100svh - 280px);
+  }
+
+  .settingsPanel .grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .actions {
+    align-items: stretch;
+  }
+
+  .nameControls {
+    width: 100%;
+  }
+
+  .nameControls input {
+    flex: 1;
+    width: auto;
+  }
+
+  .inlineToggle {
+    width: 100%;
+  }
+
+  .terminal {
+    min-height: calc(100svh - 320px);
+    max-height: calc(100svh - 320px);
+  }
+}
