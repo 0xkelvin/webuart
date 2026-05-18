@@ -1,0 +1,9 @@
+services:
+  webuart:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: webuart
+    ports:
+      - "5252:80"
+    restart: unless-stopped
