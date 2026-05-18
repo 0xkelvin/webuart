@@ -953,16 +953,16 @@ const renderNode = (node: PaneTreeNode): string => {
   }
 
   const ratio = splitRatios.get(node.splitId) ?? 0.5
-  const firstPercent = Math.round(ratio * 1000) / 10
-  const secondPercent = Math.round((1 - ratio) * 1000) / 10
+  const firstRatio = Math.round(ratio * 1000) / 1000
+  const secondRatio = Math.round((1 - ratio) * 1000) / 1000
 
   return `
     <section class="split ${node.orientation}" data-split-id="${node.splitId}">
-      <div class="splitPane splitPaneFirst" style="flex: 0 0 ${firstPercent}%">
+      <div class="splitPane splitPaneFirst" style="flex: ${firstRatio} 1 0">
         ${renderNode(node.first)}
       </div>
       <div class="splitDivider ${node.orientation}" data-split-id="${node.splitId}" role="separator" aria-orientation="${node.orientation === 'vertical' ? 'vertical' : 'horizontal'}"></div>
-      <div class="splitPane splitPaneSecond" style="flex: 0 0 ${secondPercent}%">
+      <div class="splitPane splitPaneSecond" style="flex: ${secondRatio} 1 0">
         ${renderNode(node.second)}
       </div>
     </section>
