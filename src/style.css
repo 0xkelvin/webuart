@@ -93,7 +93,7 @@ textarea {
   min-height: 0;
   height: 100%;
   max-height: 100%;
-  min-block-size: clamp(22rem, 65svh, 52rem);
+  min-block-size: clamp(21rem, 62svh, 50rem);
   overflow: hidden;
 }
 
@@ -121,7 +121,16 @@ textarea {
   min-width: 0;
   min-height: 0;
   display: grid;
-  overflow: hidden;
+  padding: 0.14rem;
+  overflow: visible;
+}
+
+.split.vertical > .splitPaneFirst {
+  padding-right: 0.24rem;
+}
+
+.split.vertical > .splitPaneSecond {
+  padding-left: 0.24rem;
 }
 
 .splitPane > * {
@@ -130,6 +139,7 @@ textarea {
 }
 
 .splitPane > .pane {
+  width: 100%;
   height: 100%;
 }
 
@@ -258,23 +268,68 @@ button:disabled {
   right: 0;
   z-index: 20;
   display: grid;
-  gap: 0.3rem;
-  min-width: 10rem;
-  padding: 0.4rem;
+  gap: 0.2rem;
+  min-width: 13.5rem;
+  max-height: min(70svh, 25rem);
+  overflow: auto;
+  padding: 0.3rem;
   border-radius: 10px;
   border: 1px solid var(--panel-border);
   background: #ffffff;
   box-shadow: 0 16px 30px rgb(0 0 0 / 22%);
 }
 
+.optionsMenu .menuItem {
+  border-radius: 7px;
+  padding: 0.42rem 0.58rem;
+  font-size: 0.84rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  transform: none;
+  filter: none;
+}
+
+.optionsMenu .menuItem:hover {
+  transform: none;
+  filter: none;
+}
+
+.menuGroup {
+  border-radius: 7px;
+  padding: 0.42rem 0.58rem;
+  background: #eef4fb;
+}
+
+.themePicker {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.84rem;
+  color: var(--text);
+}
+
+.themeLabel {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.themeSelect {
+  min-width: 7.2rem;
+  padding: 0.28rem 0.42rem;
+  border-radius: 7px;
+  font-size: 0.82rem;
+}
+
 .checkItem {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
 }
 
 .checkMark {
-  font-size: 1rem;
+  display: inline-block;
+  width: 1.1em;
+  font-size: 0.95rem;
   line-height: 1;
 }
 

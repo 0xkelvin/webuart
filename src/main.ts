@@ -36,6 +36,16 @@ type PaneState = {
   lineEnding: '' | '\n' | '\r\n' | '\r'
   txExpanded: boolean
   autoScroll: boolean
+  terminalFontRem: number
+  terminalThemeId: string
+}
+
+type TerminalTheme = {
+  id: string
+  label: string
+  bg: string
+  fg: string
+  border: string
 }
 
 type PaneTreeNode =
@@ -159,6 +169,18 @@ const tipStorageKey = 'online-uart:split-tip-seen:v1'
 const connectionLockPrefix = 'online-uart:pane-lock:'
 const lockTtlMs = 8_000
 const lockHeartbeatMs = 2_000
+const minTerminalFontRem = 0.72
+const maxTerminalFontRem = 1.1
+const terminalFontStepRem = 0.04
+const defaultTerminalFontRem = 0.86
+const defaultTerminalThemeId = 'ocean'
+const terminalThemes: TerminalTheme[] = [
+  { id: 'ocean', label: 'Ocean', bg: '#050b14', fg: '#d7f4ff', border: '#1b3648' },
+  { id: 'amber', label: 'Amber', bg: '#140f05', fg: '#ffd89b', border: '#5c4320' },
+  { id: 'matrix', label: 'Matrix', bg: '#071108', fg: '#b8ffc6', border: '#1d5a2b' },
+  { id: 'slate', label: 'Slate', bg: '#0b1119', fg: '#d8deea', border: '#27384d' },
+  { id: 'paper', label: 'Paper', bg: '#f8f7f2', fg: '#1f2937', border: '#b8c2d1' },
+]
 
 const defaultUartSettings: UartSettings = {
   baudRate: 115200,
@@ -185,6 +207,11 @@ const parseParity = (value: unknown): Parity =>
 const parseFlowControl = (value: unknown): FlowControl =>
   value === 'hardware' ? 'hardware' : 'none'
 const sanitizeRxText = (text: string) => text.replaceAll(ansiEscapeRegex, '')
+
+const getTerminalTheme = (themeId: string): TerminalTheme => {
+  const theme = terminalThemes.find((item) => item.id === themeId)
+  return theme ?? terminalThemes[0]
+}
 
 const normalizeUartName = (raw: string) => {
   const normalized = raw
@@ -343,6 +370,8 @@ const createPane = (uartName?: string): PaneState => ({
   lineEnding: '\n',
   txExpanded: false,
   autoScroll: true,
+  terminalFontRem: defaultTerminalFontRem,
+  terminalThemeId: defaultTerminalThemeId,
 })
 
 const countPanes = (node: PaneTreeNode): number => {
@@ -858,6 +887,13 @@ const renderNode = (node: PaneTreeNode): string => {
 
     const isActive = activePaneId === pane.id
     const isMenuOpen = optionsOpenPaneId === pane.id
+    const terminalTheme = getTerminalTheme(pane.terminalThemeId)
+    const themeOptionsHtml = terminalThemes
+      .map(
+        (theme) =>
+          `<option value="${theme.id}" ${theme.id === pane.terminalThemeId ? 'selected' : ''}>${escapeHtml(theme.label)}</option>`,
+      )
+      .join('')
     const connectAction = pane.isConnected ? 'disconnect' : 'connect'
     const connectLabel = pane.isConnected ? 'Disconnect' : 'Connect'
     const statusText = pane.isConnected
@@ -878,14 +914,25 @@ const renderNode = (node: PaneTreeNode): string => {
                 <button class="menuItem" data-action="export-txt" data-pane-id="${pane.id}" type="button">Export TXT</button>
                 <button class="menuItem" data-action="export-pdf" data-pane-id="${pane.id}" type="button">Export PDF</button>
                 <button class="menuItem" data-action="clear-log" data-pane-id="${pane.id}" type="button">Clear</button>
-                <button class="menuItem checkItem" data-action="toggle-auto-scroll" data-pane-id="${pane.id}" type="button"><span class="checkMark">${pane.autoScroll ? '☑' : '☐'}</span> Auto-scroll</button>
+                <button class="menuItem checkItem" data-action="toggle-auto-scroll" data-pane-id="${pane.id}" type="button"><span class="checkMark">${pane.autoScroll ? '☑' : '☐'}</span> Auto-scroll (Alt+S)</button>
+                <button class="menuItem" data-action="font-smaller" data-pane-id="${pane.id}" type="button">Font -</button>
+                <button class="menuItem" data-action="font-larger" data-pane-id="${pane.id}" type="button">Font +</button>
+                <button class="menuItem" data-action="font-reset" data-pane-id="${pane.id}" type="button">Font reset</button>
+                <div class="menuGroup" role="group" aria-label="Theme options">
+                  <label class="themePicker">
+                    <span class="themeLabel">Theme</span>
+                    <select class="themeSelect" data-pane-id="${pane.id}">
+                      ${themeOptionsHtml}
+                    </select>
+                  </label>
+                </div>
               </div>
             </div>
             <button class="ghost mini ${pane.isConnected ? 'isConnected' : ''}" data-action="${connectAction}" data-pane-id="${pane.id}" type="button"><span class="btnIcon">⏻</span><span class="btnLabel"> ${connectLabel}</span></button>
           </div>
           <p class="paneStatus">${escapeHtml(pane.uartName)} | ${statusText}${pane.statusMessage ? ` | ${escapeHtml(pane.statusMessage)}` : ''}</p>
         </header>
-        <pre class="terminal" data-pane-id="${pane.id}" aria-live="polite">${escapeHtml(pane.rxLog)}</pre>
+        <pre class="terminal" data-pane-id="${pane.id}" aria-live="polite" style="font-size: ${pane.terminalFontRem.toFixed(2)}rem; background: ${terminalTheme.bg}; color: ${terminalTheme.fg}; border-color: ${terminalTheme.border};">${escapeHtml(pane.rxLog)}</pre>
         <section class="txPanel ${pane.txExpanded ? '' : 'collapsed'}" aria-hidden="${String(!pane.txExpanded)}">
           <textarea class="txInput" data-pane-id="${pane.id}" rows="3" placeholder="Type bytes as text...">${escapeHtml(pane.txInput)}</textarea>
           <div class="txRow">
@@ -1060,6 +1107,34 @@ const handlePaneAction = async (action: string, paneId: string) => {
       return
     case 'toggle-auto-scroll':
       pane.autoScroll = !pane.autoScroll
+      pane.statusMessage = pane.autoScroll ? 'auto-scroll enabled' : 'auto-scroll paused'
+      render()
+      return
+    case 'font-smaller': {
+      const nextFont = clamp(
+        pane.terminalFontRem - terminalFontStepRem,
+        minTerminalFontRem,
+        maxTerminalFontRem,
+      )
+      pane.terminalFontRem = Number(nextFont.toFixed(2))
+      pane.statusMessage = `font ${pane.terminalFontRem.toFixed(2)}rem`
+      render()
+      return
+    }
+    case 'font-larger': {
+      const nextFont = clamp(
+        pane.terminalFontRem + terminalFontStepRem,
+        minTerminalFontRem,
+        maxTerminalFontRem,
+      )
+      pane.terminalFontRem = Number(nextFont.toFixed(2))
+      pane.statusMessage = `font ${pane.terminalFontRem.toFixed(2)}rem`
+      render()
+      return
+    }
+    case 'font-reset':
+      pane.terminalFontRem = defaultTerminalFontRem
+      pane.statusMessage = `font ${pane.terminalFontRem.toFixed(2)}rem`
       render()
       return
     case 'toggle-tx':
@@ -1258,6 +1333,19 @@ splitRootEl.addEventListener('change', (event) => {
       const value = target.value as PaneState['lineEnding']
       pane.lineEnding = value
     }
+    return
+  }
+
+  if (target.matches('.themeSelect[data-pane-id]') && target instanceof HTMLSelectElement) {
+    const paneId = target.getAttribute('data-pane-id')
+    const pane = paneId ? panes.get(paneId) : null
+    if (!pane) {
+      return
+    }
+    const selectedTheme = getTerminalTheme(target.value)
+    pane.terminalThemeId = selectedTheme.id
+    pane.statusMessage = `theme ${selectedTheme.label}`
+    render()
   }
 })
 
@@ -1328,6 +1416,19 @@ document.addEventListener('click', (event) => {
 })
 
 window.addEventListener('keydown', (event) => {
+  if (event.altKey && !event.metaKey && !event.ctrlKey && event.key.toLowerCase() === 's') {
+    const activePane = panes.get(activePaneId)
+    if (activePane) {
+      event.preventDefault()
+      activePane.autoScroll = !activePane.autoScroll
+      activePane.statusMessage = activePane.autoScroll
+        ? 'auto-scroll enabled (Alt+S)'
+        : 'auto-scroll paused (Alt+S)'
+      render()
+    }
+    return
+  }
+
   if (event.key === 'Escape') {
     hidePaneMenu()
     closeSettings()
