@@ -4,6 +4,7 @@ type Parity = 'none' | 'even' | 'odd'
 type FlowControl = 'none' | 'hardware'
 type DataBits = 7 | 8
 type StopBits = 1 | 2
+type SplitOrientation = 'vertical' | 'horizontal'
 
 type UartSettings = {
   baudRate: number
@@ -14,14 +15,43 @@ type UartSettings = {
   bufferSize: number
 }
 
+type ConnectionLock = {
+  owner: string
+  timestamp: number
+}
+
+type PaneState = {
+  id: string
+  uartName: string
+  settings: UartSettings
+  serialPort: SerialPort | null
+  reader: ReadableStreamDefaultReader<Uint8Array> | null
+  isReading: boolean
+  isConnected: boolean
+  connectedBaudRate: number | null
+  connectedUartName: string | null
+  statusMessage: string
+  rxLog: string
+  txInput: string
+  lineEnding: '' | '\n' | '\r\n' | '\r'
+  txExpanded: boolean
+  autoScroll: boolean
+}
+
+type PaneTreeNode =
+  | { kind: 'pane'; paneId: string }
+  | {
+      kind: 'split'
+      splitId: string
+      orientation: SplitOrientation
+      first: PaneTreeNode
+      second: PaneTreeNode
+    }
+
 declare global {
   interface Navigator {
     serial?: {
       requestPort: () => Promise<SerialPort>
-      addEventListener?: (
-        type: 'connect' | 'disconnect',
-        listener: (event: Event) => void,
-      ) => void
     }
   }
 
@@ -37,68 +67,40 @@ declare global {
     close: () => Promise<void>
     readable: ReadableStream<Uint8Array> | null
     writable: WritableStream<Uint8Array> | null
-    getInfo?: () => { usbVendorId?: number; usbProductId?: number }
   }
 }
 
 const app = document.querySelector<HTMLDivElement>('#app')
-
 if (!app) {
   throw new Error('Failed to initialize app root')
 }
 
 app.innerHTML = `
   <main class="layout">
-    <section class="card controls">
-      <div class="actions">
-        <div class="nameControls" role="group" aria-label="UART name">
-          <input id="uartNameInput" type="text" maxlength="40" placeholder="uart-a" />
-          <button id="applyNameBtn" class="ghost" type="button">Use Name</button>
-        </div>
-        <button id="connectBtn" class="primary">Connect</button>
-        <button id="disconnectBtn" class="ghost" disabled>Disconnect</button>
-        <button id="newTabBtn" class="ghost" type="button">New Tab</button>
-        <button id="openSettingsBtn" class="ghost">Settings</button>
-        <button id="toggleTxBtn" class="ghost">Show TX</button>
-        <button id="copyLogBtn" class="ghost" type="button">Copy Log</button>
-        <div class="exportControl">
-          <button id="exportBtn" class="ghost" type="button">Export</button>
-          <div id="exportMenu" class="exportMenu hidden" aria-hidden="true">
-            <button id="exportTxtBtn" class="menuItem" type="button">Export TXT</button>
-            <button id="exportPdfBtn" class="menuItem" type="button">Export PDF</button>
-          </div>
-        </div>
-        <button id="clearBtn" class="ghost">Clear RX</button>
-        <label class="inlineToggle"><input id="autoScroll" type="checkbox" checked /> Auto-scroll</label>
+    <section id="firstOpenTip" class="tip card hidden" aria-hidden="true">
+      <div>
+        <strong>Split tip:</strong> right-click inside any pane to split vertically or horizontally. Max 6 panes.
       </div>
-      <p id="status" class="status">Status: idle</p>
-    </section>
-
-    <section class="card rxCard">
-      <pre id="rxLog" class="terminal" aria-live="polite"></pre>
-    </section>
-
-    <section id="txPanel" class="card txPanel collapsed" aria-hidden="true">
-      <h2>TX send</h2>
-      <textarea id="txInput" rows="4" placeholder="Type bytes as text..."></textarea>
-      <div class="txRow">
-        <label>
-          Line ending
-          <select id="lineEnding">
-            <option value="">none</option>
-            <option value="\n" selected>LF (\\n)</option>
-            <option value="\r\n">CRLF (\\r\\n)</option>
-            <option value="\r">CR (\\r)</option>
-          </select>
-        </label>
-        <button id="sendBtn" class="primary" disabled>Send</button>
+      <div>
+        Layout persistence is planned as a premium feature.
       </div>
+      <button id="dismissTipBtn" class="ghost" type="button">Got it</button>
     </section>
 
-    <section id="settingsPanel" class="card settingsPanel hidden" aria-hidden="true">
+    <section id="splitRoot" class="splitRoot"></section>
+  </main>
+
+  <div id="paneMenu" class="paneMenu hidden" aria-hidden="true">
+    <button class="menuItem" data-menu-action="split-vertical" type="button">Split vertical</button>
+    <button class="menuItem" data-menu-action="split-horizontal" type="button">Split horizontal</button>
+    <button class="menuItem" data-menu-action="close-pane" type="button">Close pane</button>
+  </div>
+
+  <section id="settingsPanel" class="settingsPanel hidden" aria-hidden="true">
+    <div class="settingsDialog card">
       <div class="settingsHeader">
-        <h2>UART settings</h2>
-        <button id="closeSettingsBtn" class="ghost">Close</button>
+        <h2>Pane UART settings</h2>
+        <button id="closeSettingsBtn" class="ghost" type="button">Close</button>
       </div>
       <div class="grid">
         <label>
@@ -139,21 +141,25 @@ app.innerHTML = `
           <input id="bufferSize" type="number" min="255" step="1" value="4096" />
         </label>
       </div>
-      <p class="status">Settings apply on next connect.</p>
-    </section>
-  </main>
+      <div class="settingsActions">
+        <button id="saveSettingsBtn" class="primary" type="button">Save</button>
+      </div>
+    </div>
+  </section>
 `
 
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 const maxLogChars = 200_000
+const maxPaneCount = 6
 const ansiEscapeRegex = /\u001B\[[0-?]*[ -/]*[@-~]/g
-const workspaceStoragePrefix = 'online-uart:workspace:'
-const connectionLockPrefix = 'online-uart:connection-lock:'
-const lockTtlMs = 8_000
-const lockHeartbeatMs = 2_000
 const appRoutePrefix = '/webuart'
 const defaultWorkspaceName = 'uart-a'
+const tipStorageKey = 'online-uart:split-tip-seen:v1'
+const connectionLockPrefix = 'online-uart:pane-lock:'
+const lockTtlMs = 8_000
+const lockHeartbeatMs = 2_000
+
 const defaultUartSettings: UartSettings = {
   baudRate: 115200,
   dataBits: 8,
@@ -163,24 +169,22 @@ const defaultUartSettings: UartSettings = {
   bufferSize: 4096,
 }
 
-let serialPort: SerialPort | null = null
-let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
-let isReading = false
-let uartWorkspaceName = defaultWorkspaceName
-let isConnected = false
-let connectedBaudRate: number | null = null
-let connectedWorkspaceName: string | null = null
-let lockHeartbeatTimer: number | null = null
-
 const tabSessionId =
   typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`
 
-type ConnectionLock = {
-  owner: string
-  timestamp: number
+const parseNumber = (value: unknown, fallback: number) => {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
 }
+const parseDataBits = (value: unknown): DataBits => (Number(value) === 7 ? 7 : 8)
+const parseStopBits = (value: unknown): StopBits => (Number(value) === 2 ? 2 : 1)
+const parseParity = (value: unknown): Parity =>
+  value === 'even' || value === 'odd' ? value : 'none'
+const parseFlowControl = (value: unknown): FlowControl =>
+  value === 'hardware' ? 'hardware' : 'none'
+const sanitizeRxText = (text: string) => text.replaceAll(ansiEscapeRegex, '')
 
 const normalizeUartName = (raw: string) => {
   const normalized = raw
@@ -189,7 +193,6 @@ const normalizeUartName = (raw: string) => {
     .replace(/[^a-z0-9-]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-
   return normalized || defaultWorkspaceName
 }
 
@@ -210,113 +213,27 @@ const getWorkspaceNameFromPath = (pathname: string) => {
 
 const navigateToWorkspace = (workspaceName: string, replace = true) => {
   const nextPath = getWorkspacePath(workspaceName)
-
   if (replace) {
     window.history.replaceState({}, '', nextPath)
     return
   }
-
   window.history.pushState({}, '', nextPath)
 }
 
-const parseNumber = (value: unknown, fallback: number) => {
-  const n = Number(value)
-  return Number.isFinite(n) ? n : fallback
-}
+const getConnectionLockKey = (uartName: string) =>
+  `${connectionLockPrefix}${normalizeUartName(uartName)}`
 
-const parseDataBits = (value: unknown): DataBits => (Number(value) === 7 ? 7 : 8)
-const parseStopBits = (value: unknown): StopBits => (Number(value) === 2 ? 2 : 1)
-const parseParity = (value: unknown): Parity =>
-  value === 'even' || value === 'odd' ? value : 'none'
-const parseFlowControl = (value: unknown): FlowControl =>
-  value === 'hardware' ? 'hardware' : 'none'
-
-const baudRateEl = document.querySelector<HTMLInputElement>('#baudRate')
-const dataBitsEl = document.querySelector<HTMLSelectElement>('#dataBits')
-const stopBitsEl = document.querySelector<HTMLSelectElement>('#stopBits')
-const parityEl = document.querySelector<HTMLSelectElement>('#parity')
-const flowControlEl = document.querySelector<HTMLSelectElement>('#flowControl')
-const bufferSizeEl = document.querySelector<HTMLInputElement>('#bufferSize')
-const connectBtn = document.querySelector<HTMLButtonElement>('#connectBtn')
-const disconnectBtn = document.querySelector<HTMLButtonElement>('#disconnectBtn')
-const newTabBtn = document.querySelector<HTMLButtonElement>('#newTabBtn')
-const uartNameInputEl = document.querySelector<HTMLInputElement>('#uartNameInput')
-const applyNameBtn = document.querySelector<HTMLButtonElement>('#applyNameBtn')
-const openSettingsBtn = document.querySelector<HTMLButtonElement>('#openSettingsBtn')
-const closeSettingsBtn = document.querySelector<HTMLButtonElement>('#closeSettingsBtn')
-const toggleTxBtn = document.querySelector<HTMLButtonElement>('#toggleTxBtn')
-const copyLogBtn = document.querySelector<HTMLButtonElement>('#copyLogBtn')
-const exportBtn = document.querySelector<HTMLButtonElement>('#exportBtn')
-const exportMenuEl = document.querySelector<HTMLDivElement>('#exportMenu')
-const exportTxtBtn = document.querySelector<HTMLButtonElement>('#exportTxtBtn')
-const exportPdfBtn = document.querySelector<HTMLButtonElement>('#exportPdfBtn')
-const txPanelEl = document.querySelector<HTMLElement>('#txPanel')
-const settingsPanelEl = document.querySelector<HTMLElement>('#settingsPanel')
-const clearBtn = document.querySelector<HTMLButtonElement>('#clearBtn')
-const sendBtn = document.querySelector<HTMLButtonElement>('#sendBtn')
-const statusEl = document.querySelector<HTMLParagraphElement>('#status')
-const rxLogEl = document.querySelector<HTMLPreElement>('#rxLog')
-const txInputEl = document.querySelector<HTMLTextAreaElement>('#txInput')
-const lineEndingEl = document.querySelector<HTMLSelectElement>('#lineEnding')
-const autoScrollEl = document.querySelector<HTMLInputElement>('#autoScroll')
-
-if (
-  !baudRateEl ||
-  !dataBitsEl ||
-  !stopBitsEl ||
-  !parityEl ||
-  !flowControlEl ||
-  !bufferSizeEl ||
-  !connectBtn ||
-  !disconnectBtn ||
-  !newTabBtn ||
-  !uartNameInputEl ||
-  !applyNameBtn ||
-  !openSettingsBtn ||
-  !closeSettingsBtn ||
-  !toggleTxBtn ||
-  !copyLogBtn ||
-  !exportBtn ||
-  !exportMenuEl ||
-  !exportTxtBtn ||
-  !exportPdfBtn ||
-  !txPanelEl ||
-  !settingsPanelEl ||
-  !clearBtn ||
-  !sendBtn ||
-  !statusEl ||
-  !rxLogEl ||
-  !txInputEl ||
-  !lineEndingEl ||
-  !autoScrollEl
-) {
-  throw new Error('Failed to locate required UI elements')
-}
-
-uartNameInputEl.value = uartWorkspaceName
-
-const getWorkspaceStorageKey = (workspaceName: string) =>
-  `${workspaceStoragePrefix}${workspaceName}`
-
-const getConnectionLockKey = (workspaceName: string) =>
-  `${connectionLockPrefix}${workspaceName}`
-
-const readConnectionLock = (workspaceName: string): ConnectionLock | null => {
-  const raw = window.localStorage.getItem(getConnectionLockKey(workspaceName))
+const readConnectionLock = (uartName: string): ConnectionLock | null => {
+  const raw = window.localStorage.getItem(getConnectionLockKey(uartName))
   if (!raw) {
     return null
   }
-
   try {
     const parsed = JSON.parse(raw) as Partial<ConnectionLock>
     if (typeof parsed.owner !== 'string' || typeof parsed.timestamp !== 'number') {
       return null
     }
-
-    return {
-      owner: parsed.owner,
-      timestamp: parsed.timestamp,
-    }
+    return { owner: parsed.owner, timestamp: parsed.timestamp }
   } catch {
     return null
   }
@@ -324,158 +241,413 @@ const readConnectionLock = (workspaceName: string): ConnectionLock | null => {
 
 const isLockActive = (lock: ConnectionLock) => Date.now() - lock.timestamp < lockTtlMs
 
-const isWorkspaceNameTakenByOther = (workspaceName: string) => {
-  const lock = readConnectionLock(workspaceName)
+const isUartNameTakenByOther = (uartName: string) => {
+  const lock = readConnectionLock(uartName)
   if (!lock) {
     return false
   }
-
   return isLockActive(lock) && lock.owner !== tabSessionId
 }
 
-const writeConnectionLock = (workspaceName: string) => {
-  const lock: ConnectionLock = {
-    owner: tabSessionId,
-    timestamp: Date.now(),
-  }
-  window.localStorage.setItem(getConnectionLockKey(workspaceName), JSON.stringify(lock))
+const writeConnectionLock = (uartName: string) => {
+  const lock: ConnectionLock = { owner: tabSessionId, timestamp: Date.now() }
+  window.localStorage.setItem(getConnectionLockKey(uartName), JSON.stringify(lock))
 }
 
-const releaseConnectionLock = (workspaceName: string | null) => {
-  if (!workspaceName) {
+const releaseConnectionLock = (uartName: string | null) => {
+  if (!uartName) {
     return
   }
-
-  const existing = readConnectionLock(workspaceName)
-  if (existing?.owner === tabSessionId) {
-    window.localStorage.removeItem(getConnectionLockKey(workspaceName))
+  const lock = readConnectionLock(uartName)
+  if (lock?.owner === tabSessionId) {
+    window.localStorage.removeItem(getConnectionLockKey(uartName))
   }
 }
 
-const claimConnectionLock = (workspaceName: string) => {
-  if (isWorkspaceNameTakenByOther(workspaceName)) {
+const claimConnectionLock = (uartName: string) => {
+  if (isUartNameTakenByOther(uartName)) {
     return false
   }
-
-  writeConnectionLock(workspaceName)
+  writeConnectionLock(uartName)
   return true
 }
 
-const startLockHeartbeat = () => {
-  if (lockHeartbeatTimer !== null) {
-    window.clearInterval(lockHeartbeatTimer)
-  }
+const splitRootEl = document.querySelector<HTMLElement>('#splitRoot')
+const paneMenuEl = document.querySelector<HTMLDivElement>('#paneMenu')
+const firstOpenTipEl = document.querySelector<HTMLElement>('#firstOpenTip')
+const dismissTipBtn = document.querySelector<HTMLButtonElement>('#dismissTipBtn')
 
-  lockHeartbeatTimer = window.setInterval(() => {
-    if (connectedWorkspaceName && isConnected) {
-      writeConnectionLock(connectedWorkspaceName)
-    }
-  }, lockHeartbeatMs)
+const settingsPanelEl = document.querySelector<HTMLElement>('#settingsPanel')
+const closeSettingsBtn = document.querySelector<HTMLButtonElement>('#closeSettingsBtn')
+const saveSettingsBtn = document.querySelector<HTMLButtonElement>('#saveSettingsBtn')
+const baudRateEl = document.querySelector<HTMLInputElement>('#baudRate')
+const dataBitsEl = document.querySelector<HTMLSelectElement>('#dataBits')
+const stopBitsEl = document.querySelector<HTMLSelectElement>('#stopBits')
+const parityEl = document.querySelector<HTMLSelectElement>('#parity')
+const flowControlEl = document.querySelector<HTMLSelectElement>('#flowControl')
+const bufferSizeEl = document.querySelector<HTMLInputElement>('#bufferSize')
+
+if (
+  !splitRootEl ||
+  !paneMenuEl ||
+  !firstOpenTipEl ||
+  !dismissTipBtn ||
+  !settingsPanelEl ||
+  !closeSettingsBtn ||
+  !saveSettingsBtn ||
+  !baudRateEl ||
+  !dataBitsEl ||
+  !stopBitsEl ||
+  !parityEl ||
+  !flowControlEl ||
+  !bufferSizeEl
+) {
+  throw new Error('Failed to locate required UI elements')
 }
 
-const stopLockHeartbeat = () => {
-  if (lockHeartbeatTimer !== null) {
-    window.clearInterval(lockHeartbeatTimer)
-    lockHeartbeatTimer = null
-  }
+let paneIdCounter = 0
+let splitIdCounter = 0
+const panes = new Map<string, PaneState>()
+const splitRatios = new Map<string, number>()
+let activePaneId = ''
+let rootNode: PaneTreeNode
+let menuPaneId: string | null = null
+let optionsOpenPaneId: string | null = null
+let settingsPaneId: string | null = null
+let lockHeartbeatTimer: number | null = null
+let splitResizeState: { splitId: string; pointerId: number } | null = null
+
+const nextPaneId = () => {
+  paneIdCounter += 1
+  return `pane-${paneIdCounter}`
 }
 
-const readSettingsFromForm = (): UartSettings => ({
-  baudRate: parseNumber(baudRateEl.value, defaultUartSettings.baudRate),
-  dataBits: parseDataBits(dataBitsEl.value),
-  stopBits: parseStopBits(stopBitsEl.value),
-  parity: parseParity(parityEl.value),
-  flowControl: parseFlowControl(flowControlEl.value),
-  bufferSize: Math.max(255, parseNumber(bufferSizeEl.value, defaultUartSettings.bufferSize)),
+const nextSplitId = () => {
+  splitIdCounter += 1
+  return `split-${splitIdCounter}`
+}
+
+const createPane = (uartName?: string): PaneState => ({
+  id: nextPaneId(),
+  uartName: normalizeUartName(uartName ?? `uart-${paneIdCounter + 1}`),
+  settings: { ...defaultUartSettings },
+  serialPort: null,
+  reader: null,
+  isReading: false,
+  isConnected: false,
+  connectedBaudRate: null,
+  connectedUartName: null,
+  statusMessage: '',
+  rxLog: '',
+  txInput: '',
+  lineEnding: '\n',
+  txExpanded: false,
+  autoScroll: true,
 })
 
-const applySettingsToForm = (settings: UartSettings) => {
-  baudRateEl.value = String(settings.baudRate)
-  dataBitsEl.value = String(settings.dataBits)
-  stopBitsEl.value = String(settings.stopBits)
-  parityEl.value = settings.parity
-  flowControlEl.value = settings.flowControl
-  bufferSizeEl.value = String(settings.bufferSize)
+const countPanes = (node: PaneTreeNode): number => {
+  if (node.kind === 'pane') {
+    return 1
+  }
+  return countPanes(node.first) + countPanes(node.second)
 }
 
-const loadWorkspaceSettings = (workspaceName: string) => {
-  const raw = window.localStorage.getItem(getWorkspaceStorageKey(workspaceName))
-  if (!raw) {
-    applySettingsToForm(defaultUartSettings)
+const collectPaneIds = (node: PaneTreeNode): string[] => {
+  if (node.kind === 'pane') {
+    return [node.paneId]
+  }
+  return [...collectPaneIds(node.first), ...collectPaneIds(node.second)]
+}
+
+const replacePaneWithSplit = (
+  node: PaneTreeNode,
+  paneId: string,
+  orientation: SplitOrientation,
+  newPaneId: string,
+): PaneTreeNode => {
+  if (node.kind === 'pane') {
+    if (node.paneId !== paneId) {
+      return node
+    }
+    return {
+      kind: 'split',
+      splitId: nextSplitId(),
+      orientation,
+      first: node,
+      second: { kind: 'pane', paneId: newPaneId },
+    }
+  }
+  return {
+    kind: 'split',
+    splitId: node.splitId,
+    orientation: node.orientation,
+    first: replacePaneWithSplit(node.first, paneId, orientation, newPaneId),
+    second: replacePaneWithSplit(node.second, paneId, orientation, newPaneId),
+  }
+}
+
+const removePaneFromTree = (
+  node: PaneTreeNode,
+  paneId: string,
+): PaneTreeNode | null => {
+  if (node.kind === 'pane') {
+    return node.paneId === paneId ? null : node
+  }
+  const first = removePaneFromTree(node.first, paneId)
+  const second = removePaneFromTree(node.second, paneId)
+
+  if (!first && !second) {
+    return null
+  }
+  if (!first) {
+    return second
+  }
+  if (!second) {
+    return first
+  }
+  return {
+    kind: 'split',
+    splitId: node.splitId,
+    orientation: node.orientation,
+    first,
+    second,
+  }
+}
+
+const pickNextPaneUartName = () => {
+  const usedNames = new Set(Array.from(panes.values(), (pane) => pane.uartName))
+  for (let i = 1; i <= 999; i += 1) {
+    const candidate = normalizeUartName(`uart-${i}`)
+    if (!usedNames.has(candidate) && !isUartNameTakenByOther(candidate)) {
+      return candidate
+    }
+  }
+  return normalizeUartName(`uart-${Date.now()}`)
+}
+
+const appendPaneLog = (paneId: string, text: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  pane.rxLog += text
+  if (pane.rxLog.length > maxLogChars) {
+    pane.rxLog = pane.rxLog.slice(-maxLogChars)
+  }
+  const terminalEl = splitRootEl.querySelector<HTMLElement>(`.terminal[data-pane-id="${paneId}"]`)
+  if (!terminalEl) {
+    return
+  }
+  terminalEl.textContent = pane.rxLog
+  if (pane.autoScroll) {
+    terminalEl.scrollTop = terminalEl.scrollHeight
+  }
+}
+
+const setPaneStatus = (paneId: string, message: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  pane.statusMessage = message
+  render()
+}
+
+const isPortAlreadyUsed = (port: SerialPort, currentPaneId: string) => {
+  for (const pane of panes.values()) {
+    if (pane.id !== currentPaneId && pane.isConnected && pane.serialPort === port) {
+      return true
+    }
+  }
+  return false
+}
+
+const updateHeartbeat = () => {
+  const connectedNames = Array.from(panes.values())
+    .filter((pane) => pane.isConnected && pane.connectedUartName)
+    .map((pane) => pane.connectedUartName as string)
+
+  if (connectedNames.length === 0) {
+    if (lockHeartbeatTimer !== null) {
+      window.clearInterval(lockHeartbeatTimer)
+      lockHeartbeatTimer = null
+    }
+    return
+  }
+
+  if (lockHeartbeatTimer === null) {
+    lockHeartbeatTimer = window.setInterval(() => {
+      for (const pane of panes.values()) {
+        if (pane.isConnected && pane.connectedUartName) {
+          writeConnectionLock(pane.connectedUartName)
+        }
+      }
+    }, lockHeartbeatMs)
+  }
+}
+
+const disconnectPane = async (paneId: string, appendNote = true) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+
+  pane.isReading = false
+  try {
+    await pane.reader?.cancel()
+  } catch {
+    // Ignore cancel errors while disconnecting.
+  }
+  try {
+    await pane.serialPort?.close()
+  } catch {
+    // Ignore close errors while disconnecting.
+  }
+
+  releaseConnectionLock(pane.connectedUartName)
+
+  pane.serialPort = null
+  pane.reader = null
+  pane.isConnected = false
+  pane.connectedBaudRate = null
+  pane.connectedUartName = null
+  pane.statusMessage = ''
+  if (appendNote) {
+    appendPaneLog(paneId, '\n[Disconnected]\n')
+  }
+
+  updateHeartbeat()
+  render()
+}
+
+const readLoop = async (paneId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane?.serialPort?.readable) {
+    return
+  }
+
+  pane.isReading = true
+  try {
+    while (true) {
+      const current = panes.get(paneId)
+      if (!current || !current.serialPort?.readable || !current.isReading) {
+        break
+      }
+
+      const reader = current.serialPort.readable.getReader()
+      current.reader = reader
+
+      try {
+        while (current.isReading) {
+          const { value, done } = await reader.read()
+          if (done) {
+            break
+          }
+          if (value) {
+            appendPaneLog(paneId, sanitizeRxText(textDecoder.decode(value, { stream: true })))
+          }
+        }
+      } finally {
+        reader.releaseLock()
+        const latest = panes.get(paneId)
+        if (latest) {
+          latest.reader = null
+        }
+      }
+    }
+  } catch (error) {
+    appendPaneLog(paneId, `\n[Read error] ${(error as Error).message}\n`)
+    setPaneStatus(paneId, 'read error')
+  }
+}
+
+const connectPane = async (paneId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+
+  if (!navigator.serial) {
+    pane.statusMessage = 'Web Serial unavailable in this browser'
+    render()
+    return
+  }
+
+  if (pane.isConnected) {
+    return
+  }
+
+  pane.uartName = normalizeUartName(pane.uartName)
+  if (!claimConnectionLock(pane.uartName)) {
+    pane.statusMessage = `uart name ${pane.uartName} is in use`
+    render()
+    window.alert(`UART name "${pane.uartName}" is in use. Pick another pane UART name.`)
     return
   }
 
   try {
-    const parsed = JSON.parse(raw) as Partial<UartSettings>
-    const safeSettings: UartSettings = {
-      baudRate: parseNumber(parsed.baudRate, defaultUartSettings.baudRate),
-      dataBits: parseDataBits(parsed.dataBits),
-      stopBits: parseStopBits(parsed.stopBits),
-      parity: parseParity(parsed.parity),
-      flowControl: parseFlowControl(parsed.flowControl),
-      bufferSize: Math.max(255, parseNumber(parsed.bufferSize, defaultUartSettings.bufferSize)),
+    pane.statusMessage = 'waiting for port selection'
+    render()
+    const selectedPort = await navigator.serial.requestPort()
+
+    if (isPortAlreadyUsed(selectedPort, paneId)) {
+      releaseConnectionLock(pane.uartName)
+      pane.statusMessage = 'this serial port is already connected in another pane'
+      render()
+      window.alert('This serial port is already connected in another pane.')
+      return
     }
-    applySettingsToForm(safeSettings)
-  } catch {
-    applySettingsToForm(defaultUartSettings)
+
+    await selectedPort.open({
+      baudRate: pane.settings.baudRate,
+      dataBits: pane.settings.dataBits,
+      stopBits: pane.settings.stopBits,
+      parity: pane.settings.parity,
+      flowControl: pane.settings.flowControl,
+      bufferSize: pane.settings.bufferSize,
+    })
+
+    pane.serialPort = selectedPort
+    pane.isConnected = true
+    pane.connectedBaudRate = pane.settings.baudRate
+    pane.connectedUartName = pane.uartName
+    pane.statusMessage = ''
+    appendPaneLog(paneId, '\n[Connected]\n')
+
+    updateHeartbeat()
+    render()
+    void readLoop(paneId)
+  } catch (error) {
+    releaseConnectionLock(pane.uartName)
+    pane.serialPort = null
+    pane.isConnected = false
+    pane.connectedBaudRate = null
+    pane.connectedUartName = null
+    pane.statusMessage = `connect failed: ${(error as Error).message}`
+    render()
   }
 }
 
-const saveWorkspaceSettings = (workspaceName: string) => {
-  const settings = readSettingsFromForm()
-  window.localStorage.setItem(getWorkspaceStorageKey(workspaceName), JSON.stringify(settings))
-}
-
-const pickNextWorkspaceName = () => {
-  for (let i = 1; i <= 999; i += 1) {
-    const candidate = normalizeUartName(`uart-${i}`)
-    const hasSavedSettings = window.localStorage.getItem(getWorkspaceStorageKey(candidate)) !== null
-    const hasLock = readConnectionLock(candidate) !== null
-
-    if (candidate !== uartWorkspaceName && !hasSavedSettings && !hasLock) {
-      return candidate
-    }
+const sendPaneText = async (paneId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane?.serialPort?.writable) {
+    return
   }
 
-  return normalizeUartName(`uart-${Date.now()}`)
-}
-
-const openWorkspaceInNewTab = () => {
-  const nextWorkspaceName = pickNextWorkspaceName()
-  const newUrl = getWorkspacePath(nextWorkspaceName)
-  window.open(newUrl, '_blank', 'noopener')
-}
-
-const appendToLog = (text: string) => {
-  rxLogEl.textContent += text
-
-  if (rxLogEl.textContent.length > maxLogChars) {
-    rxLogEl.textContent = rxLogEl.textContent.slice(-maxLogChars)
-  }
-
-  if (autoScrollEl.checked) {
-    rxLogEl.scrollTop = rxLogEl.scrollHeight
+  const writer = pane.serialPort.writable.getWriter()
+  try {
+    await writer.write(textEncoder.encode(pane.txInput + pane.lineEnding))
+  } catch (error) {
+    pane.statusMessage = `send failed: ${(error as Error).message}`
+    render()
+  } finally {
+    writer.releaseLock()
   }
 }
-
-const toggleExportMenu = (show: boolean) => {
-  exportMenuEl.classList.toggle('hidden', !show)
-  exportMenuEl.setAttribute('aria-hidden', String(!show))
-}
-
-const closeExportMenu = () => {
-  toggleExportMenu(false)
-}
-
-const getLogText = () => rxLogEl.textContent ?? ''
-
-const sanitizeDownloadName = (name: string) =>
-  normalizeUartName(name || uartWorkspaceName)
 
 const getTimestampSuffix = () => {
   const date = new Date()
   const pad = (value: number) => String(value).padStart(2, '0')
-
   return [
     date.getFullYear(),
     pad(date.getMonth() + 1),
@@ -490,26 +662,26 @@ const getTimestampSuffix = () => {
 const downloadBlob = (blob: Blob, filename: string) => {
   const link = document.createElement('a')
   const objectUrl = URL.createObjectURL(blob)
-
   link.href = objectUrl
   link.download = filename
   link.rel = 'noopener'
   document.body.appendChild(link)
   link.click()
   link.remove()
-
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
 }
 
-const copyLogToClipboard = async () => {
-  const logText = getLogText()
-
+const copyPaneLog = async (paneId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
   try {
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(logText)
+      await navigator.clipboard.writeText(pane.rxLog)
     } else {
       const fallbackTextArea = document.createElement('textarea')
-      fallbackTextArea.value = logText
+      fallbackTextArea.value = pane.rxLog
       fallbackTextArea.style.position = 'fixed'
       fallbackTextArea.style.opacity = '0'
       document.body.appendChild(fallbackTextArea)
@@ -518,18 +690,12 @@ const copyLogToClipboard = async () => {
       document.execCommand('copy')
       fallbackTextArea.remove()
     }
-
-    setStatus('log copied to clipboard')
+    pane.statusMessage = 'log copied to clipboard'
+    render()
   } catch (error) {
-    setStatus(`copy failed: ${(error as Error).message}`)
+    pane.statusMessage = `copy failed: ${(error as Error).message}`
+    render()
   }
-}
-
-const exportLogAsTxt = () => {
-  const logText = getLogText()
-  const filename = `${sanitizeDownloadName(uartWorkspaceName)}-${getTimestampSuffix()}.txt`
-  downloadBlob(new Blob([logText], { type: 'text/plain;charset=utf-8' }), filename)
-  setStatus(`exported ${filename}`)
 }
 
 const wrapLogTextForPdf = (logText: string, maxLineLength = 100) => {
@@ -538,16 +704,13 @@ const wrapLogTextForPdf = (logText: string, maxLineLength = 100) => {
 
   for (const rawLine of normalizedLines) {
     const line = rawLine.length === 0 ? ' ' : rawLine
-
     for (let index = 0; index < line.length; index += maxLineLength) {
       lines.push(line.slice(index, index + maxLineLength))
     }
-
     if (rawLine.length === 0) {
       continue
     }
   }
-
   return lines
 }
 
@@ -556,7 +719,7 @@ const escapePdfText = (value: string) =>
     .replaceAll('\\', '\\\\')
     .replaceAll('(', '\\(')
     .replaceAll(')', '\\)')
-    .replace(/[^	\x20-\x7e]/g, '?')
+    .replace(/[^\t\x20-\x7e]/g, '?')
 
 const buildSimplePdf = (title: string, bodyLines: string[]) => {
   const pageWidth = 612
@@ -570,7 +733,6 @@ const buildSimplePdf = (title: string, bodyLines: string[]) => {
   for (let index = 0; index < bodyLines.length; index += linesPerPage) {
     pages.push(bodyLines.slice(index, index + linesPerPage))
   }
-
   if (pages.length === 0) {
     pages.push([' '])
   }
@@ -588,24 +750,23 @@ const buildSimplePdf = (title: string, bodyLines: string[]) => {
   const pageObjectIndices: number[] = []
   const contentObjectIndices: number[] = []
 
-  const pageCount = pages.length
-  for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+  for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
     const pageLines = pages[pageIndex]
-    const contentParts: string[] = []
-    contentParts.push('BT')
-    contentParts.push(`/F1 ${fontSize} Tf`)
-    contentParts.push(`${lineHeight} TL`)
-    contentParts.push(`1 0 0 1 ${margin} ${pageHeight - margin - fontSize} Tm`)
-    contentParts.push(`(${escapePdfText(title)}) Tj`)
-    contentParts.push('T*')
-    contentParts.push(`(${escapePdfText('-'.repeat(90))}) Tj`)
-    contentParts.push('T*')
+    const contentParts: string[] = [
+      'BT',
+      `/F1 ${fontSize} Tf`,
+      `${lineHeight} TL`,
+      `1 0 0 1 ${margin} ${pageHeight - margin - fontSize} Tm`,
+      `(${escapePdfText(title)}) Tj`,
+      'T*',
+      `(${escapePdfText('-'.repeat(90))}) Tj`,
+      'T*',
+    ]
 
     for (const line of pageLines) {
       contentParts.push(`(${escapePdfText(line)}) Tj`)
       contentParts.push('T*')
     }
-
     contentParts.push('ET')
 
     const contentStream = contentParts.join('\n')
@@ -641,7 +802,9 @@ const buildSimplePdf = (title: string, bodyLines: string[]) => {
 
   const xrefStart = byteLength
   const xrefEntries = offsets
-    .map((offset, index) => (index === 0 ? '0000000000 65535 f ' : `${String(offset).padStart(10, '0')} 00000 n `))
+    .map((offset, index) =>
+      index === 0 ? '0000000000 65535 f ' : `${String(offset).padStart(10, '0')} 00000 n `,
+    )
     .join('\n')
 
   const pdf = [
@@ -654,334 +817,594 @@ const buildSimplePdf = (title: string, bodyLines: string[]) => {
   return new Blob([pdf], { type: 'application/pdf' })
 }
 
-const exportLogAsPdf = () => {
-  const logText = getLogText()
-  const filename = `${sanitizeDownloadName(uartWorkspaceName)}-${getTimestampSuffix()}.pdf`
-  const bodyLines = wrapLogTextForPdf(logText, 100)
-  const pdfBlob = buildSimplePdf(`UART Log - ${uartWorkspaceName}`, bodyLines)
+const exportPaneLogTxt = (paneId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  const filename = `${normalizeUartName(pane.uartName)}-${getTimestampSuffix()}.txt`
+  downloadBlob(new Blob([pane.rxLog], { type: 'text/plain;charset=utf-8' }), filename)
+  pane.statusMessage = `exported ${filename}`
+  render()
+}
 
+const exportPaneLogPdf = (paneId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  const filename = `${normalizeUartName(pane.uartName)}-${getTimestampSuffix()}.pdf`
+  const bodyLines = wrapLogTextForPdf(pane.rxLog, 100)
+  const pdfBlob = buildSimplePdf(`UART Log - ${pane.uartName}`, bodyLines)
   downloadBlob(pdfBlob, filename)
-  setStatus(`exported ${filename}`)
+  pane.statusMessage = `exported ${filename}`
+  render()
 }
 
-const sanitizeRxText = (text: string) => text.replaceAll(ansiEscapeRegex, '')
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
 
-const setStatus = (extraMessage?: string) => {
-  const statusLines = [
-    `uart name : ${uartWorkspaceName}`,
-    isConnected && connectedBaudRate
-      ? `connected - ${connectedBaudRate}`
-      : 'disconnected',
-  ]
-
-  if (extraMessage) {
-    statusLines.push(extraMessage)
-  }
-
-  statusEl.textContent = statusLines.join('\n')
-}
-
-const updateButtons = (connected: boolean) => {
-  connectBtn.disabled = connected
-  disconnectBtn.disabled = !connected
-  sendBtn.disabled = !connected
-}
-
-const toggleSettings = (show: boolean) => {
-  settingsPanelEl.classList.toggle('hidden', !show)
-  settingsPanelEl.setAttribute('aria-hidden', String(!show))
-}
-
-const toggleTxPanel = () => {
-  const willShow = txPanelEl.classList.contains('collapsed')
-  txPanelEl.classList.toggle('collapsed', !willShow)
-  txPanelEl.setAttribute('aria-hidden', String(!willShow))
-  toggleTxBtn.textContent = willShow ? 'Hide TX' : 'Show TX'
-}
-
-const applyWorkspaceName = () => {
-  if (isConnected) {
-    setStatus('disconnect first before changing uart name')
-    window.alert('Disconnect first, then change UART name.')
-    return
-  }
-
-  saveWorkspaceSettings(uartWorkspaceName)
-  const nextName = normalizeUartName(uartNameInputEl.value)
-
-  if (isWorkspaceNameTakenByOther(nextName)) {
-    setStatus(`uart name ${nextName} is in use, use another name`)
-    window.alert(`UART name "${nextName}" is currently in use. Please choose another name.`)
-    return
-  }
-
-  uartWorkspaceName = nextName
-  uartNameInputEl.value = nextName
-  navigateToWorkspace(nextName)
-  loadWorkspaceSettings(nextName)
-  setStatus()
-}
-
-const readLoop = async () => {
-  if (!serialPort?.readable) {
-    return
-  }
-
-  isReading = true
-
-  try {
-    while (serialPort?.readable && isReading) {
-      reader = serialPort.readable.getReader()
-
-      try {
-        while (isReading) {
-          const { value, done } = await reader.read()
-
-          if (done) {
-            break
-          }
-
-          if (value) {
-            const decoded = textDecoder.decode(value, { stream: true })
-            appendToLog(sanitizeRxText(decoded))
-          }
-        }
-      } finally {
-        reader.releaseLock()
-        reader = null
-      }
+const renderNode = (node: PaneTreeNode): string => {
+  if (node.kind === 'pane') {
+    const pane = panes.get(node.paneId)
+    if (!pane) {
+      return ''
     }
-  } catch (error) {
-    appendToLog(`\n[Read error] ${(error as Error).message}\n`)
-    setStatus('read error')
+
+    const isActive = activePaneId === pane.id
+    const isMenuOpen = optionsOpenPaneId === pane.id
+    const connectAction = pane.isConnected ? 'disconnect' : 'connect'
+    const connectLabel = pane.isConnected ? 'Disconnect' : 'Connect'
+    const statusText = pane.isConnected
+      ? `connected - ${pane.connectedBaudRate ?? pane.settings.baudRate}`
+      : 'disconnected'
+
+    return `
+      <section class="pane ${isActive ? 'active' : ''}" data-pane-id="${pane.id}" tabindex="0">
+        <header class="paneHeader">
+          <div class="paneToolbar">
+            <input class="paneNameInput" data-pane-id="${pane.id}" value="${escapeHtml(pane.uartName)}" maxlength="40" placeholder="uart-name" title="Click to rename" />
+            <button class="ghost mini" data-action="settings" data-pane-id="${pane.id}" type="button" title="UART settings"><span class="btnIcon">⚙</span><span class="btnLabel"> Settings</span></button>
+            <div class="optionsControl" data-pane-id="${pane.id}">
+              <button class="ghost mini" data-action="toggle-options" data-pane-id="${pane.id}" type="button" title="Options">⋯</button>
+              <div class="optionsMenu ${isMenuOpen ? '' : 'hidden'}" aria-hidden="${String(!isMenuOpen)}">
+                <button class="menuItem" data-action="toggle-tx" data-pane-id="${pane.id}" type="button">${pane.txExpanded ? 'Hide TX' : 'Show TX'}</button>
+                <button class="menuItem" data-action="copy-log" data-pane-id="${pane.id}" type="button">Copy Log</button>
+                <button class="menuItem" data-action="export-txt" data-pane-id="${pane.id}" type="button">Export TXT</button>
+                <button class="menuItem" data-action="export-pdf" data-pane-id="${pane.id}" type="button">Export PDF</button>
+                <button class="menuItem" data-action="clear-log" data-pane-id="${pane.id}" type="button">Clear</button>
+                <button class="menuItem checkItem" data-action="toggle-auto-scroll" data-pane-id="${pane.id}" type="button"><span class="checkMark">${pane.autoScroll ? '☑' : '☐'}</span> Auto-scroll</button>
+              </div>
+            </div>
+            <button class="ghost mini ${pane.isConnected ? 'isConnected' : ''}" data-action="${connectAction}" data-pane-id="${pane.id}" type="button"><span class="btnIcon">⏻</span><span class="btnLabel"> ${connectLabel}</span></button>
+          </div>
+          <p class="paneStatus">${escapeHtml(pane.uartName)} | ${statusText}${pane.statusMessage ? ` | ${escapeHtml(pane.statusMessage)}` : ''}</p>
+        </header>
+        <pre class="terminal" data-pane-id="${pane.id}" aria-live="polite">${escapeHtml(pane.rxLog)}</pre>
+        <section class="txPanel ${pane.txExpanded ? '' : 'collapsed'}" aria-hidden="${String(!pane.txExpanded)}">
+          <textarea class="txInput" data-pane-id="${pane.id}" rows="3" placeholder="Type bytes as text...">${escapeHtml(pane.txInput)}</textarea>
+          <div class="txRow">
+            <label>
+              Line ending
+              <select class="lineEnding" data-pane-id="${pane.id}">
+                <option value="" ${pane.lineEnding === '' ? 'selected' : ''}>none</option>
+                <option value="\n" ${pane.lineEnding === '\n' ? 'selected' : ''}>LF (\\n)</option>
+                <option value="\r\n" ${pane.lineEnding === '\r\n' ? 'selected' : ''}>CRLF (\\r\\n)</option>
+                <option value="\r" ${pane.lineEnding === '\r' ? 'selected' : ''}>CR (\\r)</option>
+              </select>
+            </label>
+            <button class="primary" data-action="send" data-pane-id="${pane.id}" type="button" ${pane.isConnected ? '' : 'disabled'}>Send</button>
+          </div>
+        </section>
+      </section>
+    `
+  }
+
+  const ratio = splitRatios.get(node.splitId) ?? 0.5
+  const firstPercent = Math.round(ratio * 1000) / 10
+  const secondPercent = Math.round((1 - ratio) * 1000) / 10
+
+  return `
+    <section class="split ${node.orientation}" data-split-id="${node.splitId}">
+      <div class="splitPane splitPaneFirst" style="flex: 0 0 ${firstPercent}%">
+        ${renderNode(node.first)}
+      </div>
+      <div class="splitDivider ${node.orientation}" data-split-id="${node.splitId}" role="separator" aria-orientation="${node.orientation === 'vertical' ? 'vertical' : 'horizontal'}"></div>
+      <div class="splitPane splitPaneSecond" style="flex: 0 0 ${secondPercent}%">
+        ${renderNode(node.second)}
+      </div>
+    </section>
+  `
+}
+
+const render = () => {
+  splitRootEl.innerHTML = renderNode(rootNode)
+
+  for (const pane of panes.values()) {
+    const terminalEl = splitRootEl.querySelector<HTMLElement>(`.terminal[data-pane-id="${pane.id}"]`)
+    if (terminalEl && pane.autoScroll) {
+      terminalEl.scrollTop = terminalEl.scrollHeight
+    }
   }
 }
 
-const connect = async () => {
-  if (!navigator.serial) {
-    setStatus('Web Serial API is not available in this browser')
+const setPaneAsActive = (paneId: string) => {
+  if (!panes.has(paneId)) {
+    return
+  }
+  if (activePaneId === paneId) {
+    return
+  }
+  activePaneId = paneId
+  render()
+}
+
+const openSettingsForPane = (paneId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  settingsPaneId = paneId
+  baudRateEl.value = String(pane.settings.baudRate)
+  dataBitsEl.value = String(pane.settings.dataBits)
+  stopBitsEl.value = String(pane.settings.stopBits)
+  parityEl.value = pane.settings.parity
+  flowControlEl.value = pane.settings.flowControl
+  bufferSizeEl.value = String(pane.settings.bufferSize)
+  settingsPanelEl.classList.remove('hidden')
+  settingsPanelEl.setAttribute('aria-hidden', 'false')
+}
+
+const closeSettings = () => {
+  settingsPaneId = null
+  settingsPanelEl.classList.add('hidden')
+  settingsPanelEl.setAttribute('aria-hidden', 'true')
+}
+
+const splitActivePane = (orientation: SplitOrientation) => {
+  if (countPanes(rootNode) >= maxPaneCount) {
+    setPaneStatus(activePaneId, `max ${maxPaneCount} panes reached`)
+    return
+  }
+  const newPane = createPane(pickNextPaneUartName())
+  panes.set(newPane.id, newPane)
+  rootNode = replacePaneWithSplit(rootNode, activePaneId, orientation, newPane.id)
+  if (rootNode.kind === 'split') {
+    splitRatios.set(rootNode.splitId, 0.5)
+  }
+  activePaneId = newPane.id
+  render()
+}
+
+const closeActivePane = async () => {
+  if (countPanes(rootNode) <= 1) {
+    setPaneStatus(activePaneId, 'at least one pane is required')
+    return
+  }
+  const toClose = activePaneId
+  await disconnectPane(toClose, false)
+  panes.delete(toClose)
+  const nextTree = removePaneFromTree(rootNode, toClose)
+  if (!nextTree) {
+    return
+  }
+  rootNode = nextTree
+  const paneIds = collectPaneIds(rootNode)
+  activePaneId = paneIds[0]
+  render()
+}
+
+const showPaneMenu = (x: number, y: number, paneId: string) => {
+  menuPaneId = paneId
+  paneMenuEl.style.left = `${x}px`
+  paneMenuEl.style.top = `${y}px`
+  paneMenuEl.classList.remove('hidden')
+  paneMenuEl.setAttribute('aria-hidden', 'false')
+}
+
+const hidePaneMenu = () => {
+  menuPaneId = null
+  paneMenuEl.classList.add('hidden')
+  paneMenuEl.setAttribute('aria-hidden', 'true')
+}
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value))
+
+const updateSplitRatioFromPointer = (splitId: string, clientX: number, clientY: number) => {
+  const splitEl = splitRootEl.querySelector<HTMLElement>(`.split[data-split-id="${splitId}"]`)
+  if (!splitEl) {
     return
   }
 
-  if (!claimConnectionLock(uartWorkspaceName)) {
-    setStatus(`uart name ${uartWorkspaceName} is in use, use another name`)
-    window.alert(`UART name "${uartWorkspaceName}" is currently in use. Please choose another name.`)
+  const rect = splitEl.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0) {
     return
   }
 
-  try {
-    setStatus('waiting for port selection')
-    serialPort = await navigator.serial.requestPort()
+  const direction = window.getComputedStyle(splitEl).flexDirection
+  const isRow = direction.startsWith('row')
+  const rawRatio = isRow
+    ? (clientX - rect.left) / rect.width
+    : (clientY - rect.top) / rect.height
+  const ratio = clamp(rawRatio, 0.18, 0.82)
 
-    const baudRate = Number(baudRateEl.value)
-    const dataBits = parseDataBits(dataBitsEl.value)
-    const stopBits = parseStopBits(stopBitsEl.value)
-    const parity = parseParity(parityEl.value)
-    const flowControl = parseFlowControl(flowControlEl.value)
-    const bufferSize = Number(bufferSizeEl.value)
-
-    await serialPort.open({
-      baudRate,
-      dataBits,
-      stopBits,
-      parity,
-      flowControl,
-      bufferSize,
-    })
-
-    updateButtons(true)
-    isConnected = true
-    connectedWorkspaceName = uartWorkspaceName
-    connectedBaudRate = baudRate
-    startLockHeartbeat()
-    setStatus()
-    appendToLog('\n[Connected]\n')
-
-    void readLoop()
-  } catch (error) {
-    releaseConnectionLock(uartWorkspaceName)
-    serialPort = null
-    isConnected = false
-    connectedWorkspaceName = null
-    connectedBaudRate = null
-    updateButtons(false)
-    setStatus(`connect failed: ${(error as Error).message}`)
-  }
+  splitRatios.set(splitId, ratio)
+  render()
 }
 
-const disconnect = async () => {
-  isReading = false
-
-  try {
-    await reader?.cancel()
-  } catch {
-    // Ignore cancellation errors during disconnect.
-  }
-
-  try {
-    await serialPort?.close()
-  } catch {
-    // Ignore close errors and continue cleanup.
-  }
-
-  serialPort = null
-  reader = null
-  isConnected = false
-  connectedBaudRate = null
-  stopLockHeartbeat()
-  releaseConnectionLock(connectedWorkspaceName)
-  connectedWorkspaceName = null
-  appendToLog('\n[Disconnected]\n')
-  setStatus()
-  updateButtons(false)
-}
-
-const sendText = async () => {
-  if (!serialPort?.writable) {
+const handlePaneAction = async (action: string, paneId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
     return
   }
 
-  const payload = txInputEl.value + lineEndingEl.value
-  const writer = serialPort.writable.getWriter()
-
-  try {
-    await writer.write(textEncoder.encode(payload))
-  } catch (error) {
-    setStatus(`send failed: ${(error as Error).message}`)
-  } finally {
-    writer.releaseLock()
+  switch (action) {
+    case 'connect':
+      await connectPane(paneId)
+      return
+    case 'disconnect':
+      await disconnectPane(paneId)
+      return
+    case 'settings':
+      openSettingsForPane(paneId)
+      return
+    case 'toggle-options':
+      optionsOpenPaneId = optionsOpenPaneId === paneId ? null : paneId
+      render()
+      return
+    case 'toggle-auto-scroll':
+      pane.autoScroll = !pane.autoScroll
+      render()
+      return
+    case 'toggle-tx':
+      pane.txExpanded = !pane.txExpanded
+      optionsOpenPaneId = null
+      render()
+      return
+    case 'copy-log':
+      optionsOpenPaneId = null
+      await copyPaneLog(paneId)
+      return
+    case 'export-txt':
+      optionsOpenPaneId = null
+      exportPaneLogTxt(paneId)
+      return
+    case 'export-pdf':
+      optionsOpenPaneId = null
+      exportPaneLogPdf(paneId)
+      return
+    case 'clear-log':
+      pane.rxLog = ''
+      optionsOpenPaneId = null
+      render()
+      return
+    case 'send':
+      await sendPaneText(paneId)
+      return
+    case 'apply-pane-name': {
+      const inputEl = splitRootEl.querySelector<HTMLInputElement>(
+        `.paneNameInput[data-pane-id="${paneId}"]`,
+      )
+      if (!inputEl) {
+        return
+      }
+      if (pane.isConnected) {
+        pane.statusMessage = 'disconnect first before changing uart name'
+        render()
+        return
+      }
+      const nextName = normalizeUartName(inputEl.value)
+      if (isUartNameTakenByOther(nextName)) {
+        pane.statusMessage = `uart name ${nextName} is in use`
+        render()
+        window.alert(`UART name "${nextName}" is in use.`)
+        return
+      }
+      pane.uartName = nextName
+      pane.statusMessage = 'uart name updated'
+      render()
+      return
+    }
+    default:
   }
 }
 
-connectBtn.addEventListener('click', () => {
-  void connect()
+splitRootEl.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+  const paneEl = target.closest<HTMLElement>('.pane[data-pane-id]')
+  const paneId = paneEl?.dataset.paneId
+  if (paneId) {
+    const isNameInputClick = target.matches('.paneNameInput[data-pane-id]')
+    let needsRender = false
+
+    if (!target.closest('.optionsControl') && optionsOpenPaneId !== null) {
+      optionsOpenPaneId = null
+      needsRender = true
+    }
+
+    if (activePaneId !== paneId) {
+      activePaneId = paneId
+      needsRender = true
+    }
+
+    if (isNameInputClick) {
+      if (needsRender) {
+        render()
+        window.setTimeout(() => {
+          const refreshedInput = splitRootEl.querySelector<HTMLInputElement>(
+            `.paneNameInput[data-pane-id="${paneId}"]`,
+          )
+          if (!refreshedInput) {
+            return
+          }
+          refreshedInput.focus()
+          const caretPos = refreshedInput.value.length
+          refreshedInput.setSelectionRange(caretPos, caretPos)
+        }, 0)
+      }
+      return
+    }
+
+    if (needsRender) {
+      render()
+    }
+  }
 })
 
-newTabBtn.addEventListener('click', () => {
-  openWorkspaceInNewTab()
+splitRootEl.addEventListener('contextmenu', (event) => {
+  const target = event.target as HTMLElement
+  const paneEl = target.closest<HTMLElement>('.pane[data-pane-id]')
+  if (!paneEl?.dataset.paneId) {
+    return
+  }
+  event.preventDefault()
+  setPaneAsActive(paneEl.dataset.paneId)
+  showPaneMenu(event.clientX, event.clientY, paneEl.dataset.paneId)
 })
 
-applyNameBtn.addEventListener('click', () => {
-  applyWorkspaceName()
+splitRootEl.addEventListener('pointerdown', (event) => {
+  const target = event.target as HTMLElement
+  const divider = target.closest<HTMLElement>('.splitDivider[data-split-id]')
+  if (!divider || typeof event.pointerId !== 'number') {
+    return
+  }
+
+  event.preventDefault()
+  const splitId = divider.dataset.splitId
+  if (!splitId) {
+    return
+  }
+
+  splitResizeState = {
+    splitId,
+    pointerId: event.pointerId,
+  }
+
+  updateSplitRatioFromPointer(splitId, event.clientX, event.clientY)
 })
 
-uartNameInputEl.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
+window.addEventListener('pointermove', (event) => {
+  if (!splitResizeState || event.pointerId !== splitResizeState.pointerId) {
+    return
+  }
+
+  updateSplitRatioFromPointer(splitResizeState.splitId, event.clientX, event.clientY)
+})
+
+window.addEventListener('pointerup', (event) => {
+  if (!splitResizeState || event.pointerId !== splitResizeState.pointerId) {
+    return
+  }
+
+  splitResizeState = null
+})
+
+splitRootEl.addEventListener('input', (event) => {
+  const target = event.target as HTMLElement
+
+  if (target.matches('.txInput[data-pane-id]')) {
+    const paneId = target.getAttribute('data-pane-id')
+    const pane = paneId ? panes.get(paneId) : null
+    if (pane && target instanceof HTMLTextAreaElement) {
+      pane.txInput = target.value
+    }
+  }
+})
+
+splitRootEl.addEventListener('focusout', (event) => {
+  const target = event.target as HTMLElement
+  if (!target.matches('.paneNameInput[data-pane-id]')) {
+    return
+  }
+  const paneId = target.getAttribute('data-pane-id')
+  if (!paneId) {
+    return
+  }
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  if (pane.isConnected) {
+    pane.statusMessage = 'disconnect first before changing uart name'
+    window.setTimeout(() => render(), 0)
+    return
+  }
+  const nextName = normalizeUartName((target as HTMLInputElement).value)
+  if (nextName === pane.uartName) {
+    return
+  }
+  if (isUartNameTakenByOther(nextName)) {
+    pane.statusMessage = `uart name ${nextName} is in use`
+    window.setTimeout(() => render(), 0)
+    return
+  }
+  pane.uartName = nextName
+  pane.statusMessage = 'uart name updated'
+  window.setTimeout(() => render(), 0)
+})
+
+splitRootEl.addEventListener('change', (event) => {
+  const target = event.target as HTMLElement
+  if (target.matches('.lineEnding[data-pane-id]') && target instanceof HTMLSelectElement) {
+    const paneId = target.getAttribute('data-pane-id')
+    const pane = paneId ? panes.get(paneId) : null
+    if (pane) {
+      const value = target.value as PaneState['lineEnding']
+      pane.lineEnding = value
+    }
+  }
+})
+
+splitRootEl.addEventListener('keydown', (event) => {
+  const target = event.target as HTMLElement
+
+  if (event.key === 'Enter' && target.matches('.paneNameInput[data-pane-id]')) {
     event.preventDefault()
-    applyWorkspaceName()
+    ;(target as HTMLInputElement).blur()
+    return
+  }
+
+  if (
+    event.key === 'Enter' &&
+    (event.ctrlKey || event.metaKey) &&
+    target.matches('.txInput[data-pane-id]')
+  ) {
+    event.preventDefault()
+    const paneId = target.getAttribute('data-pane-id')
+    if (paneId) {
+      void sendPaneText(paneId)
+    }
   }
 })
 
-openSettingsBtn.addEventListener('click', () => {
-  toggleSettings(true)
+splitRootEl.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+  const actionButton = target.closest<HTMLButtonElement>('button[data-action][data-pane-id]')
+  if (!actionButton) {
+    return
+  }
+  const action = actionButton.getAttribute('data-action')
+  const paneId = actionButton.getAttribute('data-pane-id')
+  if (!action || !paneId) {
+    return
+  }
+  void handlePaneAction(action, paneId)
 })
 
-toggleTxBtn.addEventListener('click', () => {
-  toggleTxPanel()
-})
+paneMenuEl.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+  const button = target.closest<HTMLButtonElement>('button[data-menu-action]')
+  if (!button || !menuPaneId) {
+    return
+  }
 
-copyLogBtn.addEventListener('click', () => {
-  void copyLogToClipboard()
-})
-
-exportTxtBtn.addEventListener('click', () => {
-  exportLogAsTxt()
-})
-
-exportPdfBtn.addEventListener('click', () => {
-  exportLogAsPdf()
-})
-
-exportBtn.addEventListener('click', (event) => {
-  event.stopPropagation()
-  const shouldShow = exportMenuEl.classList.contains('hidden')
-  toggleExportMenu(shouldShow)
+  const action = button.getAttribute('data-menu-action')
+  hidePaneMenu()
+  if (action === 'split-vertical') {
+    splitActivePane('vertical')
+  } else if (action === 'split-horizontal') {
+    splitActivePane('horizontal')
+  } else if (action === 'close-pane') {
+    void closeActivePane()
+  }
 })
 
 document.addEventListener('click', (event) => {
-  if (!exportMenuEl.contains(event.target as Node) && event.target !== exportBtn) {
-    closeExportMenu()
+  if (!paneMenuEl.contains(event.target as Node)) {
+    hidePaneMenu()
+  }
+  const clickPath = event.composedPath()
+  const clickedInsideSplitRoot = clickPath.includes(splitRootEl)
+  if (!clickedInsideSplitRoot && optionsOpenPaneId !== null) {
+    optionsOpenPaneId = null
+    render()
   }
 })
 
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
-    closeExportMenu()
+    hidePaneMenu()
+    closeSettings()
   }
+})
+
+dismissTipBtn.addEventListener('click', () => {
+  firstOpenTipEl.classList.add('hidden')
+  firstOpenTipEl.setAttribute('aria-hidden', 'true')
+  window.localStorage.setItem(tipStorageKey, '1')
 })
 
 closeSettingsBtn.addEventListener('click', () => {
-  toggleSettings(false)
+  closeSettings()
 })
 
-disconnectBtn.addEventListener('click', () => {
-  void disconnect()
-})
-
-clearBtn.addEventListener('click', () => {
-  rxLogEl.textContent = ''
-})
-
-sendBtn.addEventListener('click', () => {
-  void sendText()
-})
-
-txInputEl.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-    event.preventDefault()
-    void sendText()
+saveSettingsBtn.addEventListener('click', () => {
+  if (!settingsPaneId) {
+    return
   }
+  const pane = panes.get(settingsPaneId)
+  if (!pane) {
+    closeSettings()
+    return
+  }
+
+  pane.settings = {
+    baudRate: parseNumber(baudRateEl.value, defaultUartSettings.baudRate),
+    dataBits: parseDataBits(dataBitsEl.value),
+    stopBits: parseStopBits(stopBitsEl.value),
+    parity: parseParity(parityEl.value),
+    flowControl: parseFlowControl(flowControlEl.value),
+    bufferSize: Math.max(255, parseNumber(bufferSizeEl.value, defaultUartSettings.bufferSize)),
+  }
+
+  pane.statusMessage = 'settings saved (applies on next connect)'
+  closeSettings()
+  render()
 })
 
-if (!navigator.serial) {
-  setStatus('Web Serial unsupported. Use Chrome or Edge on desktop.')
-} else {
+const initialize = () => {
   const { hadPathSegment, workspaceName } = getWorkspaceNameFromPath(window.location.pathname)
-  uartWorkspaceName = workspaceName
-  uartNameInputEl.value = workspaceName
   if (!hadPathSegment || window.location.pathname !== getWorkspacePath(workspaceName)) {
     navigateToWorkspace(workspaceName)
   }
-  loadWorkspaceSettings(workspaceName)
-  setStatus()
-}
 
-const persistSettingEvents: Array<'change' | 'input'> = ['change', 'input']
-for (const eventName of persistSettingEvents) {
-  baudRateEl.addEventListener(eventName, () => saveWorkspaceSettings(uartWorkspaceName))
-  dataBitsEl.addEventListener(eventName, () => saveWorkspaceSettings(uartWorkspaceName))
-  stopBitsEl.addEventListener(eventName, () => saveWorkspaceSettings(uartWorkspaceName))
-  parityEl.addEventListener(eventName, () => saveWorkspaceSettings(uartWorkspaceName))
-  flowControlEl.addEventListener(eventName, () => saveWorkspaceSettings(uartWorkspaceName))
-  bufferSizeEl.addEventListener(eventName, () => saveWorkspaceSettings(uartWorkspaceName))
+  const firstPane = createPane('uart-1')
+  panes.set(firstPane.id, firstPane)
+  activePaneId = firstPane.id
+  rootNode = { kind: 'pane', paneId: firstPane.id }
+
+  if (!window.localStorage.getItem(tipStorageKey)) {
+    firstOpenTipEl.classList.remove('hidden')
+    firstOpenTipEl.setAttribute('aria-hidden', 'false')
+  }
+
+  if (!navigator.serial) {
+    firstPane.statusMessage = 'Web Serial unsupported. Use Chrome or Edge on desktop.'
+  }
+
+  render()
 }
 
 window.addEventListener('popstate', () => {
-  if (isConnected) {
-    navigateToWorkspace(uartWorkspaceName, false)
-    setStatus('disconnect first before changing uart path')
-    return
-  }
-
-  saveWorkspaceSettings(uartWorkspaceName)
   const { hadPathSegment, workspaceName } = getWorkspaceNameFromPath(window.location.pathname)
-
-  if (isWorkspaceNameTakenByOther(workspaceName)) {
-    window.alert(`UART name "${workspaceName}" is currently in use. Please choose another name.`)
-    navigateToWorkspace(uartWorkspaceName)
-    return
-  }
-
-  uartWorkspaceName = workspaceName
-  uartNameInputEl.value = workspaceName
   if (!hadPathSegment || window.location.pathname !== getWorkspacePath(workspaceName)) {
     navigateToWorkspace(workspaceName)
   }
-  loadWorkspaceSettings(workspaceName)
-  setStatus()
 })
 
 window.addEventListener('beforeunload', () => {
-  stopLockHeartbeat()
-  releaseConnectionLock(connectedWorkspaceName)
+  if (lockHeartbeatTimer !== null) {
+    window.clearInterval(lockHeartbeatTimer)
+  }
+  for (const pane of panes.values()) {
+    releaseConnectionLock(pane.connectedUartName)
+  }
 })
+
+initialize()

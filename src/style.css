@@ -11,6 +11,7 @@
   --accent: #0ea5e9;
   --accent-strong: #0284c7;
   --danger: #c62828;
+  --pane-active: #f59e0b;
 }
 
 * {
@@ -23,10 +24,13 @@ body {
   color: var(--text);
   background: radial-gradient(circle at 10% 0%, var(--bg-grad-a), var(--bg-grad-b));
   min-height: 100svh;
+  height: 100svh;
+  overflow: hidden;
 }
 
 #app {
   min-height: 100svh;
+  height: 100svh;
   padding: clamp(0.45rem, 1vw, 0.9rem);
 }
 
@@ -36,6 +40,9 @@ body {
   display: grid;
   gap: 0.75rem;
   min-height: calc(100svh - 1.5rem);
+  height: calc(100svh - 1.5rem);
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
 }
 
 .card {
@@ -66,7 +73,7 @@ select,
 textarea {
   border: 1px solid #b7c4d8;
   border-radius: 8px;
-  padding: 0.5rem 0.6rem;
+  padding: 0.42rem 0.55rem;
   background: #fff;
   color: var(--text);
 }
@@ -76,57 +83,72 @@ textarea {
   resize: vertical;
 }
 
-.actions {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.nameControls {
-  display: inline-flex;
-  gap: 0.4rem;
-  align-items: center;
-}
-
-.nameControls input {
-  min-width: 8rem;
-  width: clamp(8rem, 16vw, 14rem);
-  padding: 0.48rem 0.6rem;
-}
-
-.exportControl {
-  position: relative;
-  display: inline-flex;
-}
-
-.exportMenu {
-  position: absolute;
-  top: calc(100% + 0.4rem);
-  left: 0;
+.tip {
   display: grid;
+  gap: 0.4rem;
+  padding: 0.7rem 0.8rem;
+}
+
+.splitRoot {
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  min-block-size: clamp(22rem, 65svh, 52rem);
+  overflow: hidden;
+}
+
+.splitRoot > .pane {
+  height: 100%;
+}
+
+.split {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
   gap: 0.35rem;
-  min-width: 10rem;
-  padding: 0.45rem;
-  border-radius: 10px;
-  border: 1px solid var(--panel-border);
-  background: #ffffff;
-  box-shadow: 0 16px 28px rgb(0 0 0 / 16%);
-  z-index: 5;
+  height: 100%;
 }
 
-.menuItem {
-  border: 0;
-  border-radius: 8px;
-  padding: 0.55rem 0.7rem;
-  background: #eef4fb;
-  color: var(--text);
-  text-align: left;
+.split.vertical {
+  flex-direction: row;
 }
 
-.menuItem:hover {
-  background: #dfeaf6;
+.split.horizontal {
+  flex-direction: column;
+}
+
+.splitPane {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  overflow: hidden;
+}
+
+.splitPane > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+.splitPane > .pane {
+  height: 100%;
+}
+
+.splitDivider {
+  flex: 0 0 10px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #c9d9ed, #adc3df);
+  box-shadow: inset 0 0 0 1px rgb(30 55 85 / 20%);
+  cursor: col-resize;
+  transition: background 0.15s ease;
+  touch-action: none;
+}
+
+.splitDivider:hover {
+  background: linear-gradient(180deg, #a9c5e8, #8fb2de);
+}
+
+.split.horizontal > .splitDivider {
+  cursor: row-resize;
 }
 
 button {
@@ -157,54 +179,148 @@ button:disabled {
   color: var(--text);
 }
 
-#disconnectBtn:not(:disabled) {
-  background: #ffe5e5;
-  color: var(--danger);
+.mini {
+  padding: 0.35rem 0.68rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
 }
 
-.status {
-  margin: 0.65rem 0 0;
-  color: var(--subtle);
-  font-size: 0.92rem;
-  white-space: pre-line;
+.pane {
+  background: var(--panel);
+  border: 1px solid #bfcde2;
+  border-radius: 12px;
+  box-shadow: 0 12px 26px rgb(0 0 0 / 22%);
+  min-height: 0;
+  max-height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0.48rem;
+  padding: 0.6rem;
+  overflow: hidden;
+  container-type: inline-size;
+  container-name: pane;
 }
 
-h2 {
-  margin: 0;
-  font-size: 1.08rem;
+.pane.active {
+  border-color: var(--pane-active);
+  box-shadow: 0 0 0 2px rgb(245 158 11 / 35%), 0 16px 28px rgb(0 0 0 / 24%);
 }
 
-.inlineToggle {
-  display: inline-flex;
+.paneHeader {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.paneToolbar {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.paneNameInput {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0.22rem 0.38rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+  width: clamp(4.5rem, 12vw, 9rem);
+  flex-shrink: 1;
+}
+
+.paneNameInput:hover {
+  border-color: #c5d4e8;
+  background: #f8fafd;
+}
+
+.paneNameInput:focus {
+  border-color: var(--accent);
+  background: #fff;
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(14 165 233 / 18%);
+}
+
+.btnIcon {
+  font-style: normal;
+}
+
+.optionsControl {
+  position: relative;
+}
+
+.optionsMenu {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 0.3rem;
+  min-width: 10rem;
+  padding: 0.4rem;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: #ffffff;
+  box-shadow: 0 16px 30px rgb(0 0 0 / 22%);
+}
+
+.checkItem {
+  display: flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.85rem;
+}
+
+.checkMark {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.mini.isConnected:hover:not(:disabled) {
+  background: #ffe5e5;
+  color: var(--danger);
+  filter: none;
+}
+
+@container pane (max-width: 260px) {
+  .btnLabel {
+    display: none;
+  }
+
+  .paneNameInput {
+    width: 4.5rem;
+  }
+}
+
+.paneStatus {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
 }
 
 .terminal {
   margin: 0;
-  min-height: calc(100svh - 220px);
-  max-height: calc(100svh - 220px);
+  min-height: 0;
+  height: auto;
   overflow: auto;
   border-radius: 8px;
   border: 1px solid #1b3648;
   background: var(--term-bg);
   color: var(--term-fg);
-  padding: 0.75rem;
+  padding: 0.68rem;
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-size: 0.9rem;
-  line-height: 1.4;
+  font-size: 0.86rem;
+  line-height: 1.38;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.rxCard {
-  padding: 0.6rem;
-}
-
 .txPanel {
   display: grid;
-  gap: 0.6rem;
+  gap: 0.5rem;
 }
 
 .txPanel.collapsed {
@@ -213,22 +329,51 @@ h2 {
 
 .txRow {
   display: flex;
-  gap: 0.6rem;
+  gap: 0.55rem;
   justify-content: space-between;
   align-items: end;
+}
+
+.paneMenu {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  gap: 0.35rem;
+  min-width: 11rem;
+  padding: 0.45rem;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: #ffffff;
+  box-shadow: 0 18px 34px rgb(0 0 0 / 28%);
+}
+
+.menuItem {
+  border: 0;
+  border-radius: 8px;
+  padding: 0.54rem 0.65rem;
+  background: #eef4fb;
+  color: var(--text);
+  text-align: left;
+}
+
+.menuItem:hover {
+  background: #dfeaf6;
 }
 
 .settingsPanel {
   position: fixed;
   inset: 0;
-  z-index: 10;
-  border-radius: 0;
-  border: 0;
-  width: 100%;
-  min-height: 100svh;
-  max-height: 100svh;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgb(5 12 20 / 58%);
+  padding: 1rem;
+}
+
+.settingsDialog {
+  width: min(860px, 95vw);
+  max-height: 90svh;
   overflow: auto;
-  background: #f4f8ff;
   padding: 1rem;
 }
 
@@ -246,27 +391,39 @@ h2 {
   gap: 0.75rem;
 }
 
+.settingsActions {
+  margin-top: 0.75rem;
+  display: flex;
+  justify-content: end;
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
 .hidden {
   display: none;
 }
 
 @media (max-width: 980px) {
-  .actions {
-    gap: 0.4rem;
-  }
-
   button {
     padding: 0.48rem 0.85rem;
+  }
+
+  .split.vertical {
+    flex-direction: column;
+  }
+
+  .split.vertical > .splitDivider,
+  .split.horizontal > .splitDivider {
+    flex: 0 0 10px;
+    cursor: row-resize;
   }
 
   .txRow {
     flex-direction: column;
     align-items: stretch;
-  }
-
-  .terminal {
-    min-height: calc(100svh - 280px);
-    max-height: calc(100svh - 280px);
   }
 
   .settingsPanel .grid {
@@ -275,25 +432,7 @@ h2 {
 }
 
 @media (max-width: 640px) {
-  .actions {
-    align-items: stretch;
-  }
-
-  .nameControls {
-    width: 100%;
-  }
-
-  .nameControls input {
-    flex: 1;
-    width: auto;
-  }
-
-  .inlineToggle {
-    width: 100%;
-  }
-
-  .terminal {
-    min-height: calc(100svh - 320px);
-    max-height: calc(100svh - 320px);
+  .settingsPanel .grid {
+    grid-template-columns: 1fr;
   }
 }
