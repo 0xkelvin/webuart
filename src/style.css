@@ -45,6 +45,40 @@ body {
   overflow: hidden;
 }
 
+.socialDock {
+  position: fixed;
+  top: 0.78rem;
+  right: 0.78rem;
+  z-index: 60;
+  display: flex;
+  gap: 0.38rem;
+}
+
+.socialLink {
+  width: 2rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgb(247 249 252 / 92%);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 22%);
+  text-decoration: none;
+}
+
+.socialLink:hover {
+  transform: translateY(-1px);
+  background: #fff;
+}
+
+.socialLink svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  display: block;
+}
+
 .card {
   background: var(--panel);
   border: 1px solid var(--panel-border);

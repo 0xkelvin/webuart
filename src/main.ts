@@ -86,6 +86,38 @@ if (!app) {
 }
 
 app.innerHTML = `
+  <div class="socialDock" aria-label="Project links">
+    <a
+      class="socialLink"
+      href="https://github.com/0xkelvin/webuart/tree/main"
+      target="_blank"
+      rel="noreferrer noopener"
+      aria-label="Open the webuart GitHub repository"
+      title="Open the webuart GitHub repository"
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path
+          fill="currentColor"
+          d="M8 0C3.58 0 0 3.58 0 8.02c0 3.54 2.29 6.54 5.47 7.59.4.07.55-.17.55-.38v-1.32c-2.22.48-2.69-1.07-2.69-1.07-.36-.93-.87-1.17-.87-1.17-.71-.49.05-.48.05-.48.78.06 1.19.81 1.19.81.7 1.2 1.84.85 2.29.65.07-.51.27-.85.49-1.04-1.74-.2-3.57-.87-3.57-3.86 0-.85.3-1.55.79-2.1-.08-.2-.34-1.01.08-2.1 0 0 .65-.21 2.14.8.62-.17 1.28-.26 1.94-.26s1.32.09 1.94.26c1.49-1.01 2.14-.8 2.14-.8.42 1.09.16 1.9.08 2.1.49.55.79 1.25.79 2.1 0 2.99-1.83 3.66-3.58 3.86.28.24.53.72.53 1.45v2.15c0 .21.15.46.55.38A8.02 8.02 0 0 0 16 8.02C16 3.58 12.42 0 8 0Z"
+        />
+      </svg>
+    </a>
+    <a
+      class="socialLink"
+      href="https://www.linkedin.com/in/viet-bluleap-ai/"
+      target="_blank"
+      rel="noreferrer noopener"
+      aria-label="Open LinkedIn profile"
+      title="Open LinkedIn profile"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path
+          fill="currentColor"
+          d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.44-2.13 2.94v5.67H9.35V9h3.42v1.56h.05c.48-.91 1.65-1.85 3.39-1.85 3.62 0 4.29 2.38 4.29 5.47v6.27ZM5.34 7.43a2.07 2.07 0 1 1 0-4.14 2.07 2.07 0 0 1 0 4.14ZM7.12 20.45H3.56V9h3.56v11.45ZM22.22 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.72V1.72C24 .77 23.2 0 22.22 0Z"
+        />
+      </svg>
+    </a>
+  </div>
   <main class="layout">
     <section id="firstOpenTip" class="tip card hidden" aria-hidden="true">
       <div>
