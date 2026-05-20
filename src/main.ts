@@ -133,6 +133,7 @@ app.innerHTML = `
   </main>
 
   <div id="paneMenu" class="paneMenu hidden" aria-hidden="true">
+    <button class="menuItem" data-menu-action="copy" type="button">Copy</button>
     <button class="menuItem" data-menu-action="split-vertical" type="button">Split vertical</button>
     <button class="menuItem" data-menu-action="split-horizontal" type="button">Split horizontal</button>
     <button class="menuItem" data-menu-action="close-pane" type="button">Close pane</button>
@@ -748,15 +749,61 @@ const copyPaneLog = async (paneId: string) => {
       document.body.appendChild(fallbackTextArea)
       fallbackTextArea.focus()
       fallbackTextArea.select()
-      document.execCommand('copy')
+      const copied = document.execCommand('copy')
       fallbackTextArea.remove()
+      if (!copied) {
+        throw new Error('copy command was rejected')
+      }
     }
     pane.statusMessage = 'log copied to clipboard'
     render()
   } catch (error) {
-    pane.statusMessage = `copy failed: ${(error as Error).message}`
+    pane.statusMessage = `copy failed: ${error instanceof Error ? error.message : 'unknown error'}`
     render()
   }
+}
+
+const copyPaneSelectionOrLog = async (paneId: string) => {
+  const selection = window.getSelection()
+  const selectedText = selection?.toString().trim() ?? ''
+  if (selectedText) {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(selectedText)
+      } else {
+        const fallbackTextArea = document.createElement('textarea')
+        fallbackTextArea.value = selectedText
+        fallbackTextArea.style.position = 'fixed'
+        fallbackTextArea.style.opacity = '0'
+        document.body.appendChild(fallbackTextArea)
+        fallbackTextArea.focus()
+        fallbackTextArea.select()
+        const copied = document.execCommand('copy')
+        fallbackTextArea.remove()
+        if (!copied) {
+          throw new Error('copy command was rejected')
+        }
+      }
+
+      const pane = panes.get(paneId)
+      if (!pane) {
+        return
+      }
+      pane.statusMessage = 'selection copied to clipboard'
+      render()
+      return
+    } catch (error) {
+      const pane = panes.get(paneId)
+      if (!pane) {
+        return
+      }
+      pane.statusMessage = `copy failed: ${error instanceof Error ? error.message : 'unknown error'}`
+      render()
+      return
+    }
+  }
+
+  await copyPaneLog(paneId)
 }
 
 const wrapLogTextForPdf = (logText: string, maxLineLength = 100) => {
@@ -1270,6 +1317,7 @@ splitRootEl.addEventListener('contextmenu', (event) => {
   if (!paneEl?.dataset.paneId) {
     return
   }
+
   event.preventDefault()
   setPaneAsActive(paneEl.dataset.paneId)
   showPaneMenu(event.clientX, event.clientY, paneEl.dataset.paneId)
@@ -1425,8 +1473,11 @@ paneMenuEl.addEventListener('click', (event) => {
   }
 
   const action = button.getAttribute('data-menu-action')
+  const paneId = menuPaneId
   hidePaneMenu()
-  if (action === 'split-vertical') {
+  if (action === 'copy') {
+    void copyPaneSelectionOrLog(paneId)
+  } else if (action === 'split-vertical') {
     splitActivePane('vertical')
   } else if (action === 'split-horizontal') {
     splitActivePane('horizontal')
