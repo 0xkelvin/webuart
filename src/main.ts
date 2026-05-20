@@ -1012,6 +1012,7 @@ const renderNode = (node: PaneTreeNode): string => {
           <p class="paneStatus">${escapeHtml(pane.uartName)} | ${statusText}${pane.statusMessage ? ` | ${escapeHtml(pane.statusMessage)}` : ''}</p>
         </header>
         <pre class="terminal" data-pane-id="${pane.id}" aria-live="polite" style="font-size: ${pane.terminalFontRem.toFixed(2)}rem; background: ${terminalTheme.bg}; color: ${terminalTheme.fg}; border-color: ${terminalTheme.border};">${escapeHtml(pane.rxLog)}</pre>
+        <input class="terminalHiddenInput" data-pane-id="${pane.id}" type="password" aria-hidden="true" />
         <section class="txPanel ${pane.txExpanded ? '' : 'collapsed'}" aria-hidden="${String(!pane.txExpanded)}">
           <textarea class="txInput" data-pane-id="${pane.id}" rows="3" placeholder="Type bytes as text...">${escapeHtml(pane.txInput)}</textarea>
           <div class="txRow">
@@ -1449,10 +1450,46 @@ splitRootEl.addEventListener('keydown', (event) => {
       void sendPaneText(paneId)
     }
   }
+
+  if (event.key === 'Enter' && target.matches('.terminalHiddenInput[data-pane-id]')) {
+    event.preventDefault()
+    const paneId = target.getAttribute('data-pane-id')
+    const pane = paneId ? panes.get(paneId) : null
+    const input = target as HTMLInputElement
+    if (pane && input.value && pane.serialPort?.writable) {
+      const writer = pane.serialPort.writable.getWriter()
+      writer
+        .write(textEncoder.encode(input.value + pane.lineEnding))
+        .then(() => {
+          input.value = ''
+        })
+        .catch((error) => {
+          pane.statusMessage = `send failed: ${(error as Error).message}`
+          render()
+        })
+        .finally(() => {
+          writer.releaseLock()
+        })
+    }
+  }
 })
 
 splitRootEl.addEventListener('click', (event) => {
   const target = event.target as HTMLElement
+
+  const terminal = target.closest<HTMLElement>('.terminal[data-pane-id]')
+  if (terminal) {
+    const paneId = terminal.getAttribute('data-pane-id')
+    if (paneId) {
+      const hiddenInput = splitRootEl.querySelector<HTMLInputElement>(
+        `.terminalHiddenInput[data-pane-id="${paneId}"]`,
+      )
+      if (hiddenInput) {
+        hiddenInput.focus()
+      }
+    }
+  }
+
   const actionButton = target.closest<HTMLButtonElement>('button[data-action][data-pane-id]')
   if (!actionButton) {
     return

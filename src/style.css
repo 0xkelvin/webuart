@@ -405,6 +405,22 @@ button:disabled {
   line-height: 1.38;
   white-space: pre-wrap;
   word-break: break-word;
+  cursor: text;
+}
+
+.terminalHiddenInput {
+  position: absolute;
+  top: -9999px;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: none;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
 }
 
 .txPanel {
