@@ -1014,7 +1014,7 @@ const renderNode = (node: PaneTreeNode): string => {
         <pre class="terminal" data-pane-id="${pane.id}" aria-live="polite" style="font-size: ${pane.terminalFontRem.toFixed(2)}rem; background: ${terminalTheme.bg}; color: ${terminalTheme.fg}; border-color: ${terminalTheme.border};">${escapeHtml(pane.rxLog)}</pre>
         <input class="terminalHiddenInput" data-pane-id="${pane.id}" type="password" aria-hidden="true" />
         <section class="txPanel ${pane.txExpanded ? '' : 'collapsed'}" aria-hidden="${String(!pane.txExpanded)}">
-          <textarea class="txInput" data-pane-id="${pane.id}" rows="3" placeholder="Type bytes as text...">${escapeHtml(pane.txInput)}</textarea>
+          <textarea class="txInput" data-pane-id="${pane.id}" rows="3" placeholder="Type and press Enter to send (Shift+Enter for new line)">${escapeHtml(pane.txInput)}</textarea>
           <div class="txRow">
             <label>
               Line ending
@@ -1441,7 +1441,7 @@ splitRootEl.addEventListener('keydown', (event) => {
 
   if (
     event.key === 'Enter' &&
-    (event.ctrlKey || event.metaKey) &&
+    !event.shiftKey &&
     target.matches('.txInput[data-pane-id]')
   ) {
     event.preventDefault()
