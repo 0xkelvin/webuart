@@ -20,6 +20,23 @@ type ConnectionLock = {
   timestamp: number
 }
 
+type QuickCommand = {
+  id: string
+  label: string
+  value: string
+  format: 'ascii' | 'hex'
+  appendLineEnding: boolean
+}
+
+type TimerCommand = {
+  id: string
+  label: string
+  value: string
+  format: 'ascii' | 'hex'
+  appendLineEnding: boolean
+  intervalMs: number
+}
+
 type PaneState = {
   id: string
   uartName: string
@@ -35,6 +52,11 @@ type PaneState = {
   txInput: string
   lineEnding: '' | '\n' | '\r\n' | '\r'
   txExpanded: boolean
+  quickCommands: QuickCommand[]
+  timerCommands: TimerCommand[]
+  activeTimerCommandId: string | null
+  activeTimerHandle: number | null
+  timerSendBusy: boolean
   autoScroll: boolean
   terminalFontRem: number
   terminalThemeId: string
@@ -139,6 +161,16 @@ app.innerHTML = `
     <button class="menuItem" data-menu-action="close-pane" type="button">Close pane</button>
   </div>
 
+  <div id="quickCommandMenu" class="paneMenu hidden" aria-hidden="true">
+    <button class="menuItem" data-quick-menu-action="edit" type="button">Edit command</button>
+    <button class="menuItem" data-quick-menu-action="delete" type="button">Delete command</button>
+  </div>
+
+  <div id="timerCommandMenu" class="paneMenu hidden" aria-hidden="true">
+    <button class="menuItem" data-timer-menu-action="edit" type="button">Edit timer</button>
+    <button class="menuItem" data-timer-menu-action="delete" type="button">Delete timer</button>
+  </div>
+
   <section id="settingsPanel" class="settingsPanel hidden" aria-hidden="true">
     <div class="settingsDialog card">
       <div class="settingsHeader">
@@ -189,6 +221,90 @@ app.innerHTML = `
       </div>
     </div>
   </section>
+
+  <section id="quickCommandPanel" class="quickCommandPanel hidden" aria-hidden="true">
+    <div class="quickCommandDialog card">
+      <div class="settingsHeader">
+        <h2 id="quickCommandTitle">Add Quick Command</h2>
+        <button id="closeQuickCommandBtn" class="ghost" type="button">Close</button>
+      </div>
+      <div class="quickCommandForm">
+        <label>
+          Name
+          <input id="quickCommandName" type="text" maxlength="40" placeholder="Reset" />
+        </label>
+        <label>
+          Command
+          <textarea id="quickCommandValue" rows="3" placeholder="AT+RST"></textarea>
+        </label>
+        <p id="quickCommandHelp" class="quickCmdFormHelp">ASCII mode sends plain text.</p>
+        <div class="quickCmdFormRow">
+          <label>
+            Format
+            <select id="quickCommandFormat">
+              <option value="ascii" selected>ASCII</option>
+              <option value="hex">HEX</option>
+            </select>
+          </label>
+          <label class="quickCmdToggleLabel">
+            <input id="quickCommandAppendLineEnding" type="checkbox" checked />
+            <span>Append selected line ending</span>
+          </label>
+        </div>
+        <p id="quickCommandPreview" class="quickCmdFormPreview" aria-live="polite"></p>
+        <p id="quickCommandError" class="quickCmdFormError hidden" aria-live="polite"></p>
+      </div>
+      <div class="settingsActions">
+        <button id="deleteQuickCommandBtn" class="ghost hidden" type="button">Delete</button>
+        <button id="cancelQuickCommandBtn" class="ghost" type="button">Cancel</button>
+        <button id="saveQuickCommandBtn" class="primary" type="button" disabled>Add</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="timerCommandPanel" class="quickCommandPanel hidden" aria-hidden="true">
+    <div class="quickCommandDialog card">
+      <div class="settingsHeader">
+        <h2 id="timerCommandTitle">Add Timer Command</h2>
+        <button id="closeTimerCommandBtn" class="ghost" type="button">Close</button>
+      </div>
+      <div class="quickCommandForm">
+        <label>
+          Name
+          <input id="timerCommandName" type="text" maxlength="40" placeholder="Heartbeat" />
+        </label>
+        <label>
+          Command
+          <textarea id="timerCommandValue" rows="3" placeholder="AT"></textarea>
+        </label>
+        <p id="timerCommandHelp" class="quickCmdFormHelp">ASCII mode sends plain text.</p>
+        <div class="quickCmdFormRow">
+          <label>
+            Format
+            <select id="timerCommandFormat">
+              <option value="ascii" selected>ASCII</option>
+              <option value="hex">HEX</option>
+            </select>
+          </label>
+          <label class="quickCmdToggleLabel">
+            <input id="timerCommandAppendLineEnding" type="checkbox" checked />
+            <span>Append selected line ending</span>
+          </label>
+        </div>
+        <label>
+          Interval (ms)
+          <input id="timerCommandInterval" type="number" min="200" max="3600000" step="1" value="1000" />
+        </label>
+        <p id="timerCommandPreview" class="quickCmdFormPreview" aria-live="polite"></p>
+        <p id="timerCommandError" class="quickCmdFormError hidden" aria-live="polite"></p>
+      </div>
+      <div class="settingsActions">
+        <button id="deleteTimerCommandBtn" class="ghost hidden" type="button">Delete</button>
+        <button id="cancelTimerCommandBtn" class="ghost" type="button">Cancel</button>
+        <button id="saveTimerCommandBtn" class="primary" type="button" disabled>Add</button>
+      </div>
+    </div>
+  </section>
 `
 
 const textEncoder = new TextEncoder()
@@ -207,6 +323,11 @@ const maxTerminalFontRem = 1.1
 const terminalFontStepRem = 0.04
 const defaultTerminalFontRem = 0.86
 const defaultTerminalThemeId = 'ocean'
+const maxQuickCommandsPerPane = 16
+const maxTimerCommandsPerPane = 12
+const minTimerIntervalMs = 200
+const maxTimerIntervalMs = 3_600_000
+const warnFastTimerThresholdMs = 500
 const terminalThemes: TerminalTheme[] = [
   { id: 'ocean', label: 'Ocean', bg: '#050b14', fg: '#d7f4ff', border: '#1b3648' },
   { id: 'amber', label: 'Amber', bg: '#140f05', fg: '#ffd89b', border: '#5c4320' },
@@ -240,6 +361,14 @@ const parseParity = (value: unknown): Parity =>
 const parseFlowControl = (value: unknown): FlowControl =>
   value === 'hardware' ? 'hardware' : 'none'
 const sanitizeRxText = (text: string) => text.replaceAll(ansiEscapeRegex, '')
+const createQuickCommandId = () =>
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `qc-${Date.now()}-${Math.random().toString(16).slice(2)}`
+const createTimerCommandId = () =>
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `tm-${Date.now()}-${Math.random().toString(16).slice(2)}`
 
 const getTerminalTheme = (themeId: string): TerminalTheme => {
   const theme = terminalThemes.find((item) => item.id === themeId)
@@ -334,6 +463,8 @@ const claimConnectionLock = (uartName: string) => {
 
 const splitRootEl = document.querySelector<HTMLElement>('#splitRoot')
 const paneMenuEl = document.querySelector<HTMLDivElement>('#paneMenu')
+const quickCommandMenuEl = document.querySelector<HTMLDivElement>('#quickCommandMenu')
+const timerCommandMenuEl = document.querySelector<HTMLDivElement>('#timerCommandMenu')
 const firstOpenTipEl = document.querySelector<HTMLElement>('#firstOpenTip')
 const dismissTipBtn = document.querySelector<HTMLButtonElement>('#dismissTipBtn')
 
@@ -346,10 +477,43 @@ const stopBitsEl = document.querySelector<HTMLSelectElement>('#stopBits')
 const parityEl = document.querySelector<HTMLSelectElement>('#parity')
 const flowControlEl = document.querySelector<HTMLSelectElement>('#flowControl')
 const bufferSizeEl = document.querySelector<HTMLInputElement>('#bufferSize')
+const quickCommandPanelEl = document.querySelector<HTMLElement>('#quickCommandPanel')
+const quickCommandTitleEl = document.querySelector<HTMLElement>('#quickCommandTitle')
+const closeQuickCommandBtn = document.querySelector<HTMLButtonElement>('#closeQuickCommandBtn')
+const cancelQuickCommandBtn = document.querySelector<HTMLButtonElement>('#cancelQuickCommandBtn')
+const saveQuickCommandBtn = document.querySelector<HTMLButtonElement>('#saveQuickCommandBtn')
+const deleteQuickCommandBtn = document.querySelector<HTMLButtonElement>('#deleteQuickCommandBtn')
+const quickCommandNameEl = document.querySelector<HTMLInputElement>('#quickCommandName')
+const quickCommandValueEl = document.querySelector<HTMLTextAreaElement>('#quickCommandValue')
+const quickCommandFormatEl = document.querySelector<HTMLSelectElement>('#quickCommandFormat')
+const quickCommandAppendLineEndingEl = document.querySelector<HTMLInputElement>(
+  '#quickCommandAppendLineEnding',
+)
+const quickCommandHelpEl = document.querySelector<HTMLElement>('#quickCommandHelp')
+const quickCommandPreviewEl = document.querySelector<HTMLElement>('#quickCommandPreview')
+const quickCommandErrorEl = document.querySelector<HTMLElement>('#quickCommandError')
+const timerCommandPanelEl = document.querySelector<HTMLElement>('#timerCommandPanel')
+const timerCommandTitleEl = document.querySelector<HTMLElement>('#timerCommandTitle')
+const closeTimerCommandBtn = document.querySelector<HTMLButtonElement>('#closeTimerCommandBtn')
+const cancelTimerCommandBtn = document.querySelector<HTMLButtonElement>('#cancelTimerCommandBtn')
+const saveTimerCommandBtn = document.querySelector<HTMLButtonElement>('#saveTimerCommandBtn')
+const deleteTimerCommandBtn = document.querySelector<HTMLButtonElement>('#deleteTimerCommandBtn')
+const timerCommandNameEl = document.querySelector<HTMLInputElement>('#timerCommandName')
+const timerCommandValueEl = document.querySelector<HTMLTextAreaElement>('#timerCommandValue')
+const timerCommandFormatEl = document.querySelector<HTMLSelectElement>('#timerCommandFormat')
+const timerCommandAppendLineEndingEl = document.querySelector<HTMLInputElement>(
+  '#timerCommandAppendLineEnding',
+)
+const timerCommandIntervalEl = document.querySelector<HTMLInputElement>('#timerCommandInterval')
+const timerCommandHelpEl = document.querySelector<HTMLElement>('#timerCommandHelp')
+const timerCommandPreviewEl = document.querySelector<HTMLElement>('#timerCommandPreview')
+const timerCommandErrorEl = document.querySelector<HTMLElement>('#timerCommandError')
 
 if (
   !splitRootEl ||
   !paneMenuEl ||
+  !quickCommandMenuEl ||
+  !timerCommandMenuEl ||
   !firstOpenTipEl ||
   !dismissTipBtn ||
   !settingsPanelEl ||
@@ -360,7 +524,34 @@ if (
   !stopBitsEl ||
   !parityEl ||
   !flowControlEl ||
-  !bufferSizeEl
+  !bufferSizeEl ||
+  !quickCommandPanelEl ||
+  !quickCommandTitleEl ||
+  !closeQuickCommandBtn ||
+  !cancelQuickCommandBtn ||
+  !saveQuickCommandBtn ||
+  !deleteQuickCommandBtn ||
+  !quickCommandNameEl ||
+  !quickCommandValueEl ||
+  !quickCommandFormatEl ||
+  !quickCommandAppendLineEndingEl ||
+  !quickCommandHelpEl ||
+  !quickCommandPreviewEl ||
+  !quickCommandErrorEl ||
+  !timerCommandPanelEl ||
+  !timerCommandTitleEl ||
+  !closeTimerCommandBtn ||
+  !cancelTimerCommandBtn ||
+  !saveTimerCommandBtn ||
+  !deleteTimerCommandBtn ||
+  !timerCommandNameEl ||
+  !timerCommandValueEl ||
+  !timerCommandFormatEl ||
+  !timerCommandAppendLineEndingEl ||
+  !timerCommandIntervalEl ||
+  !timerCommandHelpEl ||
+  !timerCommandPreviewEl ||
+  !timerCommandErrorEl
 ) {
   throw new Error('Failed to locate required UI elements')
 }
@@ -372,8 +563,16 @@ const splitRatios = new Map<string, number>()
 let activePaneId = ''
 let rootNode: PaneTreeNode
 let menuPaneId: string | null = null
+let quickCommandMenuPaneId: string | null = null
+let quickCommandMenuCommandId: string | null = null
+let timerCommandMenuPaneId: string | null = null
+let timerCommandMenuCommandId: string | null = null
 let optionsOpenPaneId: string | null = null
 let settingsPaneId: string | null = null
+let quickCommandPaneId: string | null = null
+let quickCommandEditId: string | null = null
+let timerCommandPaneId: string | null = null
+let timerCommandEditId: string | null = null
 let lockHeartbeatTimer: number | null = null
 let splitResizeState: { splitId: string; pointerId: number } | null = null
 
@@ -402,6 +601,11 @@ const createPane = (uartName?: string): PaneState => ({
   txInput: '',
   lineEnding: '\n',
   txExpanded: false,
+  quickCommands: [],
+  timerCommands: [],
+  activeTimerCommandId: null,
+  activeTimerHandle: null,
+  timerSendBusy: false,
   autoScroll: true,
   terminalFontRem: defaultTerminalFontRem,
   terminalThemeId: defaultTerminalThemeId,
@@ -552,6 +756,13 @@ const disconnectPane = async (paneId: string, appendNote = true) => {
   const pane = panes.get(paneId)
   if (!pane) {
     return
+  }
+
+  if (pane.activeTimerHandle !== null) {
+    window.clearInterval(pane.activeTimerHandle)
+    pane.activeTimerHandle = null
+    pane.activeTimerCommandId = null
+    pane.timerSendBusy = false
   }
 
   pane.isReading = false
@@ -705,6 +916,602 @@ const sendPaneText = async (paneId: string) => {
   } finally {
     writer.releaseLock()
   }
+}
+
+const concatUint8Arrays = (chunks: Uint8Array[]) => {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
+  const merged = new Uint8Array(totalLength)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.length
+  }
+  return merged
+}
+
+const parseHexPayload = (raw: string): Uint8Array | null => {
+  const normalized = raw.replace(/0x/gi, '').replace(/\s+/g, '')
+  if (!normalized || normalized.length % 2 !== 0 || /[^0-9a-f]/i.test(normalized)) {
+    return null
+  }
+
+  const bytes = new Uint8Array(normalized.length / 2)
+  for (let index = 0; index < normalized.length; index += 2) {
+    bytes[index / 2] = Number.parseInt(normalized.slice(index, index + 2), 16)
+  }
+  return bytes
+}
+
+const toHexString = (bytes: Uint8Array) =>
+  Array.from(bytes, (value) => value.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+
+const escapeControlChars = (value: string) =>
+  value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('\r', '\\r')
+    .replaceAll('\n', '\\n')
+    .replaceAll('\t', '\\t')
+
+const getCommandPayloadBytes = (
+  command: Pick<QuickCommand, 'value' | 'format' | 'appendLineEnding'>,
+  lineEnding: PaneState['lineEnding'],
+) => {
+  const lineEndingSuffix = command.appendLineEnding ? lineEnding : ''
+
+  if (command.format === 'hex') {
+    const payload = parseHexPayload(command.value)
+    if (!payload) {
+      return null
+    }
+    const suffixBytes = lineEndingSuffix ? textEncoder.encode(lineEndingSuffix) : new Uint8Array()
+    return concatUint8Arrays([payload, suffixBytes])
+  }
+
+  return textEncoder.encode(command.value + lineEndingSuffix)
+}
+
+const sendCommandPayload = async (
+  paneId: string,
+  command: Pick<QuickCommand, 'label' | 'value' | 'format' | 'appendLineEnding'>,
+  origin: 'quick' | 'timer',
+  showSuccessStatus = true,
+) => {
+  const pane = panes.get(paneId)
+  if (!pane || !pane.serialPort?.writable) {
+    return false
+  }
+
+  const bytes = getCommandPayloadBytes(command, pane.lineEnding)
+  if (!bytes) {
+    pane.statusMessage = `${origin} command ${command.label} has invalid HEX`
+    render()
+    return false
+  }
+
+  const writer = pane.serialPort.writable.getWriter()
+  try {
+    await writer.write(bytes)
+    if (showSuccessStatus) {
+      pane.statusMessage = `sent ${origin} command ${command.label}`
+      render()
+    }
+    return true
+  } catch (error) {
+    pane.statusMessage = `send failed: ${(error as Error).message}`
+    render()
+    return false
+  } finally {
+    writer.releaseLock()
+  }
+}
+
+const stopPaneTimer = (paneId: string, statusMessage?: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+
+  if (pane.activeTimerHandle !== null) {
+    window.clearInterval(pane.activeTimerHandle)
+  }
+  pane.activeTimerHandle = null
+  pane.activeTimerCommandId = null
+  pane.timerSendBusy = false
+  if (statusMessage) {
+    pane.statusMessage = statusMessage
+  }
+  render()
+}
+
+const runPaneTimerTick = async (paneId: string, commandId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane || pane.activeTimerCommandId !== commandId) {
+    return
+  }
+  if (!pane.isConnected || !pane.serialPort?.writable) {
+    stopPaneTimer(paneId, 'timer auto-stopped: disconnected')
+    return
+  }
+  if (pane.timerSendBusy) {
+    return
+  }
+
+  const command = pane.timerCommands.find((item) => item.id === commandId)
+  if (!command) {
+    stopPaneTimer(paneId, 'timer command missing')
+    return
+  }
+
+  pane.timerSendBusy = true
+  const ok = await sendCommandPayload(paneId, command, 'timer', false)
+  pane.timerSendBusy = false
+  if (!ok) {
+    stopPaneTimer(paneId, `timer stopped: ${command.label} send failed`)
+  }
+}
+
+const startPaneTimer = (paneId: string, commandId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  if (!pane.isConnected || !pane.serialPort?.writable) {
+    pane.statusMessage = 'connect first to start timer'
+    render()
+    return
+  }
+
+  const command = pane.timerCommands.find((item) => item.id === commandId)
+  if (!command) {
+    return
+  }
+
+  if (command.intervalMs < warnFastTimerThresholdMs) {
+    const confirmed = window.confirm(
+      `Timer interval ${command.intervalMs}ms is very fast and may flood your device. Continue?`,
+    )
+    if (!confirmed) {
+      return
+    }
+  }
+
+  if (pane.activeTimerHandle !== null) {
+    window.clearInterval(pane.activeTimerHandle)
+    pane.activeTimerHandle = null
+  }
+
+  pane.activeTimerCommandId = command.id
+  pane.timerSendBusy = false
+  pane.activeTimerHandle = window.setInterval(() => {
+    void runPaneTimerTick(paneId, command.id)
+  }, command.intervalMs)
+  pane.statusMessage = `timer started: ${command.label} every ${command.intervalMs}ms`
+  render()
+}
+
+const sendQuickCommand = async (paneId: string, commandId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  if (!pane.serialPort?.writable) {
+    pane.statusMessage = 'connect first to send quick command'
+    render()
+    return
+  }
+
+  const command = pane.quickCommands.find((item) => item.id === commandId)
+  if (!command) {
+    return
+  }
+
+  await sendCommandPayload(paneId, command, 'quick', true)
+}
+
+const updateQuickCommandPreview = () => {
+  if (!quickCommandPaneId) {
+    quickCommandPreviewEl.textContent = ''
+    return
+  }
+
+  const pane = panes.get(quickCommandPaneId)
+  if (!pane) {
+    quickCommandPreviewEl.textContent = ''
+    return
+  }
+
+  const value = quickCommandValueEl.value
+  const format: QuickCommand['format'] = quickCommandFormatEl.value === 'hex' ? 'hex' : 'ascii'
+  const command = {
+    value,
+    format,
+    appendLineEnding: quickCommandAppendLineEndingEl.checked,
+  }
+
+  if (!value.trim()) {
+    quickCommandPreviewEl.textContent = 'Preview: enter a command to see bytes.'
+    return
+  }
+
+  const payload = getCommandPayloadBytes(command, pane.lineEnding)
+  if (!payload) {
+    quickCommandPreviewEl.textContent = 'Preview: HEX is invalid.'
+    return
+  }
+
+  if (command.format === 'hex') {
+    quickCommandPreviewEl.textContent = `Preview bytes: ${toHexString(payload) || '(none)'}`
+    return
+  }
+
+  const previewText = value + (command.appendLineEnding ? pane.lineEnding : '')
+  quickCommandPreviewEl.textContent = `Preview string: "${escapeControlChars(previewText)}" | bytes: ${toHexString(payload) || '(none)'}`
+}
+
+const updateQuickCommandFormHelp = () => {
+  if (quickCommandFormatEl.value === 'hex') {
+    quickCommandHelpEl.textContent = 'HEX mode: use byte pairs like AA 0D 0A.'
+    return
+  }
+  quickCommandHelpEl.textContent = 'ASCII mode sends plain text.'
+}
+
+const validateQuickCommandForm = () => {
+  const label = quickCommandNameEl.value.trim()
+  const value = quickCommandValueEl.value
+  let errorMessage = ''
+
+  if (!label) {
+    errorMessage = 'Name is required.'
+  } else if (!value.trim()) {
+    errorMessage = 'Command is required.'
+  } else if (quickCommandFormatEl.value === 'hex' && !parseHexPayload(value)) {
+    errorMessage = 'HEX must contain full byte pairs (example: AA 0D 0A).'
+  }
+
+  quickCommandErrorEl.textContent = errorMessage
+  quickCommandErrorEl.classList.toggle('hidden', !errorMessage)
+  saveQuickCommandBtn.disabled = Boolean(errorMessage)
+  updateQuickCommandPreview()
+}
+
+const closeQuickCommandModal = () => {
+  quickCommandPaneId = null
+  quickCommandEditId = null
+  quickCommandPanelEl.classList.add('hidden')
+  quickCommandPanelEl.setAttribute('aria-hidden', 'true')
+}
+
+const openQuickCommandModal = (paneId: string, commandId: string | null) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  if (!commandId && pane.quickCommands.length >= maxQuickCommandsPerPane) {
+    pane.statusMessage = `max ${maxQuickCommandsPerPane} quick commands reached`
+    render()
+    return
+  }
+
+  const command = commandId ? pane.quickCommands.find((item) => item.id === commandId) : null
+  if (commandId && !command) {
+    return
+  }
+
+  quickCommandPaneId = paneId
+  quickCommandEditId = command?.id ?? null
+  hideQuickCommandMenu()
+  hideTimerCommandMenu()
+
+  quickCommandTitleEl.textContent = command ? 'Edit Quick Command' : 'Add Quick Command'
+  saveQuickCommandBtn.textContent = command ? 'Save' : 'Add'
+  deleteQuickCommandBtn.classList.toggle('hidden', !command)
+
+  quickCommandNameEl.value = command?.label ?? ''
+  quickCommandValueEl.value = command?.value ?? ''
+  quickCommandFormatEl.value = command?.format ?? 'ascii'
+  quickCommandAppendLineEndingEl.checked = command?.appendLineEnding ?? true
+
+  updateQuickCommandFormHelp()
+  updateQuickCommandPreview()
+  validateQuickCommandForm()
+
+  quickCommandPanelEl.classList.remove('hidden')
+  quickCommandPanelEl.setAttribute('aria-hidden', 'false')
+  window.setTimeout(() => quickCommandNameEl.focus(), 0)
+}
+
+const saveQuickCommandFromModal = () => {
+  if (!quickCommandPaneId) {
+    return
+  }
+
+  const pane = panes.get(quickCommandPaneId)
+  if (!pane) {
+    closeQuickCommandModal()
+    return
+  }
+
+  validateQuickCommandForm()
+  if (saveQuickCommandBtn.disabled) {
+    return
+  }
+
+  const nextCommand: Omit<QuickCommand, 'id'> = {
+    label: quickCommandNameEl.value.trim(),
+    value: quickCommandValueEl.value,
+    format: quickCommandFormatEl.value === 'hex' ? 'hex' : 'ascii',
+    appendLineEnding: quickCommandAppendLineEndingEl.checked,
+  }
+
+  if (quickCommandEditId) {
+    const commandIndex = pane.quickCommands.findIndex((item) => item.id === quickCommandEditId)
+    if (commandIndex < 0) {
+      closeQuickCommandModal()
+      return
+    }
+    pane.quickCommands[commandIndex] = {
+      ...pane.quickCommands[commandIndex],
+      ...nextCommand,
+    }
+    pane.statusMessage = `updated quick command ${nextCommand.label}`
+  } else {
+    pane.quickCommands.push({
+      id: createQuickCommandId(),
+      ...nextCommand,
+    })
+    pane.statusMessage = `added quick command ${nextCommand.label}`
+  }
+
+  closeQuickCommandModal()
+  render()
+}
+
+const deleteQuickCommand = (paneId: string, commandId: string, closeModal = false) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    if (closeModal) {
+      closeQuickCommandModal()
+    }
+    return
+  }
+
+  const commandIndex = pane.quickCommands.findIndex((item) => item.id === commandId)
+  if (commandIndex < 0) {
+    if (closeModal) {
+      closeQuickCommandModal()
+    }
+    return
+  }
+
+  const [removed] = pane.quickCommands.splice(commandIndex, 1)
+  pane.statusMessage = `deleted quick command ${removed.label}`
+  if (closeModal) {
+    closeQuickCommandModal()
+  }
+  render()
+}
+
+const deleteQuickCommandFromModal = () => {
+  if (!quickCommandPaneId || !quickCommandEditId) {
+    return
+  }
+  deleteQuickCommand(quickCommandPaneId, quickCommandEditId, true)
+}
+
+const updateTimerCommandPreview = () => {
+  if (!timerCommandPaneId) {
+    timerCommandPreviewEl.textContent = ''
+    return
+  }
+
+  const pane = panes.get(timerCommandPaneId)
+  if (!pane) {
+    timerCommandPreviewEl.textContent = ''
+    return
+  }
+
+  const value = timerCommandValueEl.value
+  const intervalMs = parseNumber(timerCommandIntervalEl.value, NaN)
+  const format: QuickCommand['format'] = timerCommandFormatEl.value === 'hex' ? 'hex' : 'ascii'
+  const command = {
+    value,
+    format,
+    appendLineEnding: timerCommandAppendLineEndingEl.checked,
+  }
+
+  if (!value.trim()) {
+    timerCommandPreviewEl.textContent = 'Preview: enter a command to see bytes.'
+    return
+  }
+
+  const payload = getCommandPayloadBytes(command, pane.lineEnding)
+  if (!payload) {
+    timerCommandPreviewEl.textContent = 'Preview: HEX is invalid.'
+    return
+  }
+
+  const intervalText = Number.isFinite(intervalMs) ? `${Math.round(intervalMs)}ms` : 'invalid interval'
+  if (command.format === 'hex') {
+    timerCommandPreviewEl.textContent = `Every ${intervalText}: ${toHexString(payload) || '(none)'}`
+    return
+  }
+
+  const previewText = value + (command.appendLineEnding ? pane.lineEnding : '')
+  timerCommandPreviewEl.textContent = `Every ${intervalText}: "${escapeControlChars(previewText)}" | bytes: ${toHexString(payload) || '(none)'}`
+}
+
+const updateTimerCommandFormHelp = () => {
+  if (timerCommandFormatEl.value === 'hex') {
+    timerCommandHelpEl.textContent = 'HEX mode: use byte pairs like AA 0D 0A.'
+    return
+  }
+  timerCommandHelpEl.textContent = 'ASCII mode sends plain text.'
+}
+
+const validateTimerCommandForm = () => {
+  const label = timerCommandNameEl.value.trim()
+  const value = timerCommandValueEl.value
+  const intervalMs = Math.round(parseNumber(timerCommandIntervalEl.value, NaN))
+  let errorMessage = ''
+
+  if (!label) {
+    errorMessage = 'Name is required.'
+  } else if (!value.trim()) {
+    errorMessage = 'Command is required.'
+  } else if (timerCommandFormatEl.value === 'hex' && !parseHexPayload(value)) {
+    errorMessage = 'HEX must contain full byte pairs (example: AA 0D 0A).'
+  } else if (!Number.isFinite(intervalMs)) {
+    errorMessage = 'Interval is required.'
+  } else if (intervalMs < minTimerIntervalMs || intervalMs > maxTimerIntervalMs) {
+    errorMessage = `Interval must be between ${minTimerIntervalMs} and ${maxTimerIntervalMs} ms.`
+  }
+
+  timerCommandErrorEl.textContent = errorMessage
+  timerCommandErrorEl.classList.toggle('hidden', !errorMessage)
+  saveTimerCommandBtn.disabled = Boolean(errorMessage)
+  updateTimerCommandPreview()
+}
+
+const closeTimerCommandModal = () => {
+  timerCommandPaneId = null
+  timerCommandEditId = null
+  timerCommandPanelEl.classList.add('hidden')
+  timerCommandPanelEl.setAttribute('aria-hidden', 'true')
+}
+
+const openTimerCommandModal = (paneId: string, commandId: string | null) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  if (!commandId && pane.timerCommands.length >= maxTimerCommandsPerPane) {
+    pane.statusMessage = `max ${maxTimerCommandsPerPane} timer commands reached`
+    render()
+    return
+  }
+
+  const command = commandId ? pane.timerCommands.find((item) => item.id === commandId) : null
+  if (commandId && !command) {
+    return
+  }
+
+  timerCommandPaneId = paneId
+  timerCommandEditId = command?.id ?? null
+  hideTimerCommandMenu()
+  hideQuickCommandMenu()
+
+  timerCommandTitleEl.textContent = command ? 'Edit Timer Command' : 'Add Timer Command'
+  saveTimerCommandBtn.textContent = command ? 'Save' : 'Add'
+  deleteTimerCommandBtn.classList.toggle('hidden', !command)
+
+  timerCommandNameEl.value = command?.label ?? ''
+  timerCommandValueEl.value = command?.value ?? ''
+  timerCommandFormatEl.value = command?.format ?? 'ascii'
+  timerCommandAppendLineEndingEl.checked = command?.appendLineEnding ?? true
+  timerCommandIntervalEl.value = String(command?.intervalMs ?? 1000)
+
+  updateTimerCommandFormHelp()
+  updateTimerCommandPreview()
+  validateTimerCommandForm()
+
+  timerCommandPanelEl.classList.remove('hidden')
+  timerCommandPanelEl.setAttribute('aria-hidden', 'false')
+  window.setTimeout(() => timerCommandNameEl.focus(), 0)
+}
+
+const saveTimerCommandFromModal = () => {
+  if (!timerCommandPaneId) {
+    return
+  }
+
+  const pane = panes.get(timerCommandPaneId)
+  if (!pane) {
+    closeTimerCommandModal()
+    return
+  }
+
+  validateTimerCommandForm()
+  if (saveTimerCommandBtn.disabled) {
+    return
+  }
+
+  const nextCommand: Omit<TimerCommand, 'id'> = {
+    label: timerCommandNameEl.value.trim(),
+    value: timerCommandValueEl.value,
+    format: timerCommandFormatEl.value === 'hex' ? 'hex' : 'ascii',
+    appendLineEnding: timerCommandAppendLineEndingEl.checked,
+    intervalMs: Math.round(parseNumber(timerCommandIntervalEl.value, 1000)),
+  }
+
+  if (timerCommandEditId) {
+    const commandIndex = pane.timerCommands.findIndex((item) => item.id === timerCommandEditId)
+    if (commandIndex < 0) {
+      closeTimerCommandModal()
+      return
+    }
+    const activeBeingEdited = pane.activeTimerCommandId === timerCommandEditId
+    pane.timerCommands[commandIndex] = {
+      ...pane.timerCommands[commandIndex],
+      ...nextCommand,
+    }
+    pane.statusMessage = `updated timer command ${nextCommand.label}`
+    if (activeBeingEdited) {
+      startPaneTimer(timerCommandPaneId, timerCommandEditId)
+    }
+  } else {
+    pane.timerCommands.push({
+      id: createTimerCommandId(),
+      ...nextCommand,
+    })
+    pane.statusMessage = `added timer command ${nextCommand.label}`
+  }
+
+  closeTimerCommandModal()
+  render()
+}
+
+const deleteTimerCommand = (paneId: string, commandId: string, closeModal = false) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    if (closeModal) {
+      closeTimerCommandModal()
+    }
+    return
+  }
+
+  const commandIndex = pane.timerCommands.findIndex((item) => item.id === commandId)
+  if (commandIndex < 0) {
+    if (closeModal) {
+      closeTimerCommandModal()
+    }
+    return
+  }
+
+  if (pane.activeTimerCommandId === commandId) {
+    stopPaneTimer(paneId)
+  }
+  const [removed] = pane.timerCommands.splice(commandIndex, 1)
+  pane.statusMessage = `deleted timer command ${removed.label}`
+  if (closeModal) {
+    closeTimerCommandModal()
+  }
+  render()
+}
+
+const deleteTimerCommandFromModal = () => {
+  if (!timerCommandPaneId || !timerCommandEditId) {
+    return
+  }
+  deleteTimerCommand(timerCommandPaneId, timerCommandEditId, true)
+}
+
+const manageQuickCommand = (paneId: string, commandId: string) => {
+  openQuickCommandModal(paneId, commandId)
+}
+
+const manageTimerCommand = (paneId: string, commandId: string) => {
+  openTimerCommandModal(paneId, commandId)
 }
 
 const getTimestampSuffix = () => {
@@ -1027,6 +1834,41 @@ const renderNode = (node: PaneTreeNode): string => {
             </label>
             <button class="primary" data-action="send" data-pane-id="${pane.id}" type="button" ${pane.isConnected ? '' : 'disabled'}>Send</button>
           </div>
+          <div class="quickCmds" aria-label="Quick commands">
+            <div class="quickCmdsHeader">
+              <span>Quick commands</span>
+              <button class="ghost mini" data-action="quick-add" data-pane-id="${pane.id}" type="button">+ Add</button>
+            </div>
+            <div class="quickCmdsStrip" data-pane-id="${pane.id}">
+              ${pane.quickCommands.length
+                ? pane.quickCommands
+                    .map(
+                      (command) =>
+                        `<button class="quickCmdChip" data-action="quick-send" data-pane-id="${pane.id}" data-command-id="${command.id}" type="button" title="${command.format.toUpperCase()} | ${escapeHtml(command.value)} | Right-click to edit">${escapeHtml(command.label)}</button>`,
+                    )
+                    .join('')
+                : '<p class="quickCmdHint">No quick commands yet. Use + Add.</p>'}
+            </div>
+          </div>
+          <div class="quickCmds" aria-label="Timer commands">
+            <div class="quickCmdsHeader">
+              <span>Timer commands</span>
+              <div class="timerActions">
+                <button class="ghost mini" data-action="timer-add" data-pane-id="${pane.id}" type="button">+ Add</button>
+                <button class="ghost mini" data-action="timer-stop" data-pane-id="${pane.id}" type="button" ${pane.activeTimerCommandId ? '' : 'disabled'}>Stop</button>
+              </div>
+            </div>
+            <div class="quickCmdsStrip" data-pane-id="${pane.id}">
+              ${pane.timerCommands.length
+                ? pane.timerCommands
+                    .map((command) => {
+                      const isRunning = pane.activeTimerCommandId === command.id
+                      return `<button class="quickCmdChip timerCmdChip ${isRunning ? 'isRunning' : ''}" data-action="timer-start" data-pane-id="${pane.id}" data-timer-command-id="${command.id}" type="button" title="${command.format.toUpperCase()} | ${escapeHtml(command.value)} | ${command.intervalMs}ms | Right-click to edit">${isRunning ? '● ' : ''}${escapeHtml(command.label)} (${command.intervalMs}ms)</button>`
+                    })
+                    .join('')
+                : '<p class="quickCmdHint">No timer commands yet. Use + Add.</p>'}
+            </div>
+          </div>
         </section>
       </section>
     `
@@ -1140,6 +1982,38 @@ const hidePaneMenu = () => {
   paneMenuEl.setAttribute('aria-hidden', 'true')
 }
 
+const showQuickCommandMenu = (x: number, y: number, paneId: string, commandId: string) => {
+  quickCommandMenuPaneId = paneId
+  quickCommandMenuCommandId = commandId
+  quickCommandMenuEl.style.left = `${x}px`
+  quickCommandMenuEl.style.top = `${y}px`
+  quickCommandMenuEl.classList.remove('hidden')
+  quickCommandMenuEl.setAttribute('aria-hidden', 'false')
+}
+
+const hideQuickCommandMenu = () => {
+  quickCommandMenuPaneId = null
+  quickCommandMenuCommandId = null
+  quickCommandMenuEl.classList.add('hidden')
+  quickCommandMenuEl.setAttribute('aria-hidden', 'true')
+}
+
+const showTimerCommandMenu = (x: number, y: number, paneId: string, commandId: string) => {
+  timerCommandMenuPaneId = paneId
+  timerCommandMenuCommandId = commandId
+  timerCommandMenuEl.style.left = `${x}px`
+  timerCommandMenuEl.style.top = `${y}px`
+  timerCommandMenuEl.classList.remove('hidden')
+  timerCommandMenuEl.setAttribute('aria-hidden', 'false')
+}
+
+const hideTimerCommandMenu = () => {
+  timerCommandMenuPaneId = null
+  timerCommandMenuCommandId = null
+  timerCommandMenuEl.classList.add('hidden')
+  timerCommandMenuEl.setAttribute('aria-hidden', 'true')
+}
+
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value))
 
@@ -1242,6 +2116,15 @@ const handlePaneAction = async (action: string, paneId: string) => {
     case 'send':
       await sendPaneText(paneId)
       return
+    case 'quick-add':
+      openQuickCommandModal(paneId, null)
+      return
+    case 'timer-add':
+      openTimerCommandModal(paneId, null)
+      return
+    case 'timer-stop':
+      stopPaneTimer(paneId, 'timer stopped')
+      return
     case 'apply-pane-name': {
       const inputEl = splitRootEl.querySelector<HTMLInputElement>(
         `.paneNameInput[data-pane-id="${paneId}"]`,
@@ -1314,6 +2197,43 @@ splitRootEl.addEventListener('click', (event) => {
 
 splitRootEl.addEventListener('contextmenu', (event) => {
   const target = event.target as HTMLElement
+  const timerCommandButton = target.closest<HTMLButtonElement>(
+    '.timerCmdChip[data-pane-id][data-timer-command-id]',
+  )
+  if (timerCommandButton) {
+    event.preventDefault()
+    const paneId = timerCommandButton.getAttribute('data-pane-id')
+    const commandId = timerCommandButton.getAttribute('data-timer-command-id')
+    if (!paneId || !commandId) {
+      return
+    }
+    setPaneAsActive(paneId)
+    hidePaneMenu()
+    hideQuickCommandMenu()
+    showTimerCommandMenu(event.clientX, event.clientY, paneId, commandId)
+    return
+  }
+
+  const quickCommandButton = target.closest<HTMLButtonElement>(
+    '.quickCmdChip[data-pane-id][data-command-id]',
+  )
+  if (quickCommandButton) {
+    event.preventDefault()
+    const paneId = quickCommandButton.getAttribute('data-pane-id')
+    const commandId = quickCommandButton.getAttribute('data-command-id')
+    if (!paneId || !commandId) {
+      return
+    }
+    setPaneAsActive(paneId)
+    hidePaneMenu()
+    hideTimerCommandMenu()
+    showQuickCommandMenu(event.clientX, event.clientY, paneId, commandId)
+    return
+  }
+
+  hideQuickCommandMenu()
+  hideTimerCommandMenu()
+
   const paneEl = target.closest<HTMLElement>('.pane[data-pane-id]')
   if (!paneEl?.dataset.paneId) {
     return
@@ -1499,6 +2419,20 @@ splitRootEl.addEventListener('click', (event) => {
   if (!action || !paneId) {
     return
   }
+  if (action === 'quick-send') {
+    const commandId = actionButton.getAttribute('data-command-id')
+    if (commandId) {
+      void sendQuickCommand(paneId, commandId)
+    }
+    return
+  }
+  if (action === 'timer-start') {
+    const commandId = actionButton.getAttribute('data-timer-command-id')
+    if (commandId) {
+      startPaneTimer(paneId, commandId)
+    }
+    return
+  }
   void handlePaneAction(action, paneId)
 })
 
@@ -1523,9 +2457,65 @@ paneMenuEl.addEventListener('click', (event) => {
   }
 })
 
+quickCommandMenuEl.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+  const button = target.closest<HTMLButtonElement>('button[data-quick-menu-action]')
+  if (!button || !quickCommandMenuPaneId || !quickCommandMenuCommandId) {
+    return
+  }
+
+  const action = button.getAttribute('data-quick-menu-action')
+  const paneId = quickCommandMenuPaneId
+  const commandId = quickCommandMenuCommandId
+  hideQuickCommandMenu()
+
+  if (action === 'edit') {
+    manageQuickCommand(paneId, commandId)
+    return
+  }
+
+  if (action === 'delete') {
+    const confirmed = window.confirm('Delete this quick command?')
+    if (confirmed) {
+      deleteQuickCommand(paneId, commandId)
+    }
+  }
+})
+
+timerCommandMenuEl.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+  const button = target.closest<HTMLButtonElement>('button[data-timer-menu-action]')
+  if (!button || !timerCommandMenuPaneId || !timerCommandMenuCommandId) {
+    return
+  }
+
+  const action = button.getAttribute('data-timer-menu-action')
+  const paneId = timerCommandMenuPaneId
+  const commandId = timerCommandMenuCommandId
+  hideTimerCommandMenu()
+
+  if (action === 'edit') {
+    manageTimerCommand(paneId, commandId)
+    return
+  }
+
+  if (action === 'delete') {
+    const confirmed = window.confirm('Delete this timer command?')
+    if (confirmed) {
+      deleteTimerCommand(paneId, commandId)
+    }
+  }
+})
+
 document.addEventListener('click', (event) => {
   if (!paneMenuEl.contains(event.target as Node)) {
     hidePaneMenu()
+  }
+  if (!quickCommandMenuEl.contains(event.target as Node)) {
+    hideQuickCommandMenu()
+  }
+  if (!timerCommandMenuEl.contains(event.target as Node)) {
+    hideTimerCommandMenu()
   }
   const clickPath = event.composedPath()
   const clickedInsideSplitRoot = clickPath.includes(splitRootEl)
@@ -1551,7 +2541,11 @@ window.addEventListener('keydown', (event) => {
 
   if (event.key === 'Escape') {
     hidePaneMenu()
+    hideQuickCommandMenu()
+    hideTimerCommandMenu()
     closeSettings()
+    closeQuickCommandModal()
+    closeTimerCommandModal()
   }
 })
 
@@ -1563,6 +2557,102 @@ dismissTipBtn.addEventListener('click', () => {
 
 closeSettingsBtn.addEventListener('click', () => {
   closeSettings()
+})
+
+closeQuickCommandBtn.addEventListener('click', () => {
+  closeQuickCommandModal()
+})
+
+cancelQuickCommandBtn.addEventListener('click', () => {
+  closeQuickCommandModal()
+})
+
+saveQuickCommandBtn.addEventListener('click', () => {
+  saveQuickCommandFromModal()
+})
+
+deleteQuickCommandBtn.addEventListener('click', () => {
+  deleteQuickCommandFromModal()
+})
+
+quickCommandNameEl.addEventListener('input', () => {
+  validateQuickCommandForm()
+})
+
+quickCommandValueEl.addEventListener('input', () => {
+  validateQuickCommandForm()
+})
+
+quickCommandFormatEl.addEventListener('change', () => {
+  updateQuickCommandFormHelp()
+  validateQuickCommandForm()
+})
+
+quickCommandAppendLineEndingEl.addEventListener('change', () => {
+  updateQuickCommandPreview()
+})
+
+quickCommandPanelEl.addEventListener('click', (event) => {
+  if (event.target === quickCommandPanelEl) {
+    closeQuickCommandModal()
+  }
+})
+
+quickCommandPanelEl.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault()
+    saveQuickCommandFromModal()
+  }
+})
+
+closeTimerCommandBtn.addEventListener('click', () => {
+  closeTimerCommandModal()
+})
+
+cancelTimerCommandBtn.addEventListener('click', () => {
+  closeTimerCommandModal()
+})
+
+saveTimerCommandBtn.addEventListener('click', () => {
+  saveTimerCommandFromModal()
+})
+
+deleteTimerCommandBtn.addEventListener('click', () => {
+  deleteTimerCommandFromModal()
+})
+
+timerCommandNameEl.addEventListener('input', () => {
+  validateTimerCommandForm()
+})
+
+timerCommandValueEl.addEventListener('input', () => {
+  validateTimerCommandForm()
+})
+
+timerCommandFormatEl.addEventListener('change', () => {
+  updateTimerCommandFormHelp()
+  validateTimerCommandForm()
+})
+
+timerCommandAppendLineEndingEl.addEventListener('change', () => {
+  updateTimerCommandPreview()
+})
+
+timerCommandIntervalEl.addEventListener('input', () => {
+  validateTimerCommandForm()
+})
+
+timerCommandPanelEl.addEventListener('click', (event) => {
+  if (event.target === timerCommandPanelEl) {
+    closeTimerCommandModal()
+  }
+})
+
+timerCommandPanelEl.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault()
+    saveTimerCommandFromModal()
+  }
 })
 
 saveSettingsBtn.addEventListener('click', () => {
@@ -1624,6 +2714,9 @@ window.addEventListener('beforeunload', () => {
     window.clearInterval(lockHeartbeatTimer)
   }
   for (const pane of panes.values()) {
+    if (pane.activeTimerHandle !== null) {
+      window.clearInterval(pane.activeTimerHandle)
+    }
     releaseConnectionLock(pane.connectedUartName)
   }
 })

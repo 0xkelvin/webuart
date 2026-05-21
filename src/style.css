@@ -439,6 +439,65 @@ button:disabled {
   align-items: end;
 }
 
+.quickCmds {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.quickCmdsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+  color: var(--subtle);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.timerActions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.quickCmdsStrip {
+  display: flex;
+  gap: 0.42rem;
+  overflow-x: auto;
+  padding-bottom: 0.12rem;
+}
+
+.quickCmdChip {
+  border-radius: 999px;
+  border: 1px solid #c6d8ee;
+  background: #edf5ff;
+  color: #0f2136;
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 0.3rem 0.62rem;
+  white-space: nowrap;
+  transform: none;
+  filter: none;
+}
+
+.quickCmdChip:hover:not(:disabled) {
+  background: #dcecff;
+  transform: none;
+  filter: none;
+}
+
+.timerCmdChip.isRunning {
+  border-color: #67c687;
+  background: #e9f9ee;
+  color: #0a5a29;
+}
+
+.quickCmdHint {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 0.77rem;
+}
+
 .paneMenu {
   position: fixed;
   z-index: 30;
@@ -473,6 +532,72 @@ button:disabled {
   place-items: center;
   background: rgb(5 12 20 / 58%);
   padding: 1rem;
+}
+
+.quickCommandPanel {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  background: rgb(5 12 20 / 58%);
+  padding: 1rem;
+}
+
+.quickCommandDialog {
+  width: min(620px, 96vw);
+  max-height: 90svh;
+  overflow: auto;
+  padding: 1rem;
+}
+
+.quickCommandForm {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.75rem;
+}
+
+.quickCmdFormHelp {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 0.8rem;
+}
+
+.quickCmdFormRow {
+  display: flex;
+  align-items: end;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.quickCmdToggleLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 0.25rem;
+}
+
+.quickCmdFormError {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.quickCmdFormPreview {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 0.8rem;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  background: #f2f6fb;
+  border: 1px solid #d5e0ee;
+  border-radius: 8px;
+  padding: 0.45rem 0.55rem;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .settingsDialog {
@@ -539,5 +664,10 @@ h2 {
 @media (max-width: 640px) {
   .settingsPanel .grid {
     grid-template-columns: 1fr;
+  }
+
+  .quickCmdFormRow {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
