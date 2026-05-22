@@ -2182,6 +2182,9 @@ const renderNode = (node: PaneTreeNode): string => {
               </div>
             </div>
             <button class="ghost mini ${pane.isConnected ? 'isConnected' : ''}" data-action="${connectAction}" data-pane-id="${pane.id}" type="button"><span class="btnIcon">⏻</span><span class="btnLabel"> ${connectLabel}</span></button>
+            ${pane.shareStatus === 'sharing' || pane.shareStatus === 'creating'
+              ? `<button class="ghost mini shareQuickBtn" data-action="share-copy-link" data-pane-id="${pane.id}" type="button" ${pane.shareUrl ? '' : 'disabled'}><span class="btnLabel">Copy Link</span></button>`
+              : ''}
           </div>
           <p class="paneStatus">${statusSegments.join(' | ')}</p>
         </header>
