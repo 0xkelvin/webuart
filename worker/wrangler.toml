@@ -2,6 +2,10 @@ name = "online-uart-share-api"
 main = "src/index.ts"
 compatibility_date = "2026-05-03"
 
+routes = [
+  { pattern = "api.vietmq.com/*", zone_name = "vietmq.com" }
+]
+
 [durable_objects]
 bindings = [
   { name = "SESSION_ROOM", class_name = "SessionRoom" }
@@ -10,3 +14,6 @@ bindings = [
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionRoom"]
+
+[vars]
+ALLOWED_ORIGINS = "https://vietmq.com,https://www.vietmq.com"

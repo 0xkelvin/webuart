@@ -6,4 +6,7 @@ services:
     container_name: webuart
     ports:
       - "5252:80"
+    environment:
+      ONLINE_UART_SHARE_API_BASE: ${ONLINE_UART_SHARE_API_BASE:-https://api.vietmq.com}
+      ONLINE_UART_SHARE_WS_BASE: ${ONLINE_UART_SHARE_WS_BASE:-wss://api.vietmq.com}
     restart: unless-stopped
