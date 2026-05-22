@@ -1,0 +1,12 @@
+{
+  "name": "online-uart-share-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.65.0"
+  }
+}

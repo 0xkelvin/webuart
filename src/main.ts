@@ -37,6 +37,9 @@ type TimerCommand = {
   intervalMs: number
 }
 
+type ShareStatus = 'idle' | 'creating' | 'sharing' | 'error'
+type ShareViewerState = 'waiting' | 'connected'
+
 type PaneState = {
   id: string
   uartName: string
@@ -59,6 +62,13 @@ type PaneState = {
   activeTimerCommandId: string | null
   activeTimerHandle: number | null
   timerSendBusy: boolean
+  shareStatus: ShareStatus
+  shareViewerState: ShareViewerState
+  shareSessionId: string | null
+  shareUrl: string | null
+  shareError: string | null
+  shareSocket: WebSocket | null
+  sharePingHandle: number | null
   autoScroll: boolean
   terminalFontRem: number
   terminalThemeId: string
@@ -101,6 +111,11 @@ declare global {
     close: () => Promise<void>
     readable: ReadableStream<Uint8Array> | null
     writable: WritableStream<Uint8Array> | null
+  }
+
+  interface Window {
+    __ONLINE_UART_SHARE_API_BASE__?: string
+    __ONLINE_UART_SHARE_WS_BASE__?: string
   }
 }
 
@@ -330,6 +345,8 @@ const maxTimerCommandsPerPane = 12
 const minTimerIntervalMs = 200
 const maxTimerIntervalMs = 3_600_000
 const warnFastTimerThresholdMs = 500
+const sharePingIntervalMs = 30_000
+const shareInitialHistoryChars = 80_000
 const terminalThemes: TerminalTheme[] = [
   { id: 'ocean', label: 'Ocean', bg: '#050b14', fg: '#d7f4ff', border: '#1b3648' },
   { id: 'amber', label: 'Amber', bg: '#140f05', fg: '#ffd89b', border: '#5c4320' },
@@ -371,6 +388,48 @@ const createTimerCommandId = () =>
   typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `tm-${Date.now()}-${Math.random().toString(16).slice(2)}`
+
+const isLocalHostName = (hostname: string) =>
+  hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+
+const getShareConfigMeta = (name: string) => {
+  const content = document
+    .querySelector<HTMLMetaElement>(`meta[name="${name}"]`)
+    ?.getAttribute('content')
+    ?.trim()
+  return content && content.length > 0 ? content : null
+}
+
+const getShareApiBase = () => {
+  if (window.__ONLINE_UART_SHARE_API_BASE__) {
+    return window.__ONLINE_UART_SHARE_API_BASE__
+  }
+  const metaApiBase = getShareConfigMeta('online-uart-share-api-base')
+  if (metaApiBase) {
+    return metaApiBase
+  }
+  return isLocalHostName(window.location.hostname)
+    ? 'http://localhost:8787'
+    : window.location.origin
+}
+
+const getShareWsBase = () => {
+  if (window.__ONLINE_UART_SHARE_WS_BASE__) {
+    return window.__ONLINE_UART_SHARE_WS_BASE__
+  }
+  const metaWsBase = getShareConfigMeta('online-uart-share-ws-base')
+  if (metaWsBase) {
+    return metaWsBase
+  }
+  const apiBase = getShareApiBase()
+  if (apiBase.startsWith('https://')) {
+    return `wss://${apiBase.slice('https://'.length)}`
+  }
+  if (apiBase.startsWith('http://')) {
+    return `ws://${apiBase.slice('http://'.length)}`
+  }
+  return apiBase
+}
 
 const getTerminalTheme = (themeId: string): TerminalTheme => {
   const theme = terminalThemes.find((item) => item.id === themeId)
@@ -610,6 +669,13 @@ const createPane = (uartName?: string): PaneState => ({
   activeTimerCommandId: null,
   activeTimerHandle: null,
   timerSendBusy: false,
+  shareStatus: 'idle',
+  shareViewerState: 'waiting',
+  shareSessionId: null,
+  shareUrl: null,
+  shareError: null,
+  shareSocket: null,
+  sharePingHandle: null,
   autoScroll: true,
   terminalFontRem: defaultTerminalFontRem,
   terminalThemeId: defaultTerminalThemeId,
@@ -712,6 +778,8 @@ const appendPaneLog = (paneId: string, text: string) => {
   if (pane.autoScroll) {
     terminalEl.scrollTop = terminalEl.scrollHeight
   }
+
+  broadcastPaneShareData(paneId, text)
 }
 
 const setPaneStatus = (paneId: string, message: string) => {
@@ -721,6 +789,260 @@ const setPaneStatus = (paneId: string, message: string) => {
   }
   pane.statusMessage = message
   render()
+}
+
+const clearPaneShareSocket = (pane: PaneState) => {
+  if (pane.sharePingHandle !== null) {
+    window.clearInterval(pane.sharePingHandle)
+    pane.sharePingHandle = null
+  }
+  if (pane.shareSocket) {
+    pane.shareSocket.onopen = null
+    pane.shareSocket.onmessage = null
+    pane.shareSocket.onclose = null
+    pane.shareSocket.onerror = null
+    try {
+      pane.shareSocket.close()
+    } catch {
+      // Ignore socket close errors during cleanup.
+    }
+    pane.shareSocket = null
+  }
+}
+
+const stopPaneSharing = (paneId: string, statusMessage?: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  clearPaneShareSocket(pane)
+  pane.shareStatus = 'idle'
+  pane.shareViewerState = 'waiting'
+  pane.shareSessionId = null
+  pane.shareUrl = null
+  pane.shareError = null
+  if (statusMessage) {
+    pane.statusMessage = statusMessage
+  }
+  render()
+}
+
+const copyShareLink = async (paneId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane?.shareUrl) {
+    return
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(pane.shareUrl)
+    } else {
+      const fallbackTextArea = document.createElement('textarea')
+      fallbackTextArea.value = pane.shareUrl
+      fallbackTextArea.style.position = 'fixed'
+      fallbackTextArea.style.opacity = '0'
+      document.body.appendChild(fallbackTextArea)
+      fallbackTextArea.focus()
+      fallbackTextArea.select()
+      const copied = document.execCommand('copy')
+      fallbackTextArea.remove()
+      if (!copied) {
+        throw new Error('copy command was rejected')
+      }
+    }
+    pane.statusMessage = 'share link copied'
+    render()
+  } catch (error) {
+    pane.statusMessage = `copy share link failed: ${error instanceof Error ? error.message : 'unknown error'}`
+    render()
+  }
+}
+
+const broadcastPaneShareData = (paneId: string, payload: string) => {
+  const pane = panes.get(paneId)
+  if (!pane || pane.shareStatus !== 'sharing' || !pane.shareSocket) {
+    return
+  }
+  if (pane.shareSocket.readyState !== WebSocket.OPEN) {
+    return
+  }
+  try {
+    pane.shareSocket.send(JSON.stringify({ type: 'data', payload }))
+  } catch {
+    pane.shareError = 'share relay send failed'
+    pane.shareStatus = 'error'
+    clearPaneShareSocket(pane)
+    render()
+  }
+}
+
+const startPaneSharing = async (paneId: string) => {
+  const pane = panes.get(paneId)
+  if (!pane) {
+    return
+  }
+  if (!pane.isConnected) {
+    pane.statusMessage = 'connect first to share session'
+    render()
+    return
+  }
+  if (pane.shareStatus === 'creating' || pane.shareStatus === 'sharing') {
+    return
+  }
+
+  clearPaneShareSocket(pane)
+  pane.shareStatus = 'creating'
+  pane.shareViewerState = 'waiting'
+  pane.shareSessionId = null
+  pane.shareUrl = null
+  pane.shareError = null
+  pane.statusMessage = 'creating share link...'
+  render()
+
+  try {
+    const response = await fetch(`${getShareApiBase()}/api/sessions`, {
+      method: 'POST',
+    })
+    const body = (await response.json().catch(() => ({}))) as {
+      sessionId?: string
+      hostToken?: string
+      error?: string
+    }
+
+    if (!response.ok || !body.sessionId || !body.hostToken) {
+      throw new Error(body.error ?? 'failed to create session')
+    }
+
+    const wsUrl = `${getShareWsBase()}/api/sessions/${body.sessionId}/ws?role=host`
+    const ws = new WebSocket(wsUrl)
+
+    pane.shareSessionId = body.sessionId
+    pane.shareUrl = `${window.location.origin}/viewer.html?s=${encodeURIComponent(body.sessionId)}`
+    pane.shareSocket = ws
+    pane.shareStatus = 'creating'
+    pane.shareViewerState = 'waiting'
+    pane.shareError = null
+    pane.statusMessage = 'authenticating share session...'
+    render()
+
+    ws.onopen = () => {
+      const current = panes.get(paneId)
+      if (!current || current.shareSocket !== ws) {
+        return
+      }
+      ws.send(JSON.stringify({ type: 'auth', token: body.hostToken }))
+    }
+
+    ws.onmessage = (event) => {
+      const current = panes.get(paneId)
+      if (!current || current.shareSocket !== ws) {
+        return
+      }
+      let message: {
+        type?: string
+        message?: string
+        newToken?: string
+      }
+      try {
+        message = JSON.parse(String(event.data)) as typeof message
+      } catch {
+        return
+      }
+
+      if (message.type === 'auth_ok') {
+        current.shareStatus = 'sharing'
+        current.shareViewerState = 'waiting'
+        current.shareError = null
+        current.statusMessage = 'share link ready'
+        if (current.sharePingHandle !== null) {
+          window.clearInterval(current.sharePingHandle)
+        }
+        current.sharePingHandle = window.setInterval(() => {
+          const livePane = panes.get(paneId)
+          if (!livePane || livePane.shareSocket !== ws || ws.readyState !== WebSocket.OPEN) {
+            return
+          }
+          ws.send(JSON.stringify({ type: 'ping' }))
+        }, sharePingIntervalMs)
+
+        const history = current.rxLog.slice(-shareInitialHistoryChars)
+        if (history) {
+          ws.send(JSON.stringify({ type: 'data', payload: history }))
+        }
+        render()
+        return
+      }
+
+      if (message.type === 'viewer_connected') {
+        current.shareViewerState = 'connected'
+        current.statusMessage = 'viewer connected'
+        render()
+        return
+      }
+
+      if (message.type === 'viewer_disconnected') {
+        current.shareViewerState = 'waiting'
+        current.statusMessage = 'viewer disconnected'
+        render()
+        return
+      }
+
+      if (message.type === 'session_closed') {
+        stopPaneSharing(paneId, 'share session closed')
+        return
+      }
+
+      if (message.type === 'error') {
+        current.shareError = message.message ?? 'share session error'
+        current.shareStatus = 'error'
+        current.shareSessionId = null
+        current.shareUrl = null
+        current.statusMessage = current.shareError
+        clearPaneShareSocket(current)
+        render()
+      }
+    }
+
+    ws.onclose = () => {
+      const current = panes.get(paneId)
+      if (!current || current.shareSocket !== ws) {
+        return
+      }
+      clearPaneShareSocket(current)
+      if (current.shareStatus !== 'error') {
+        current.shareStatus = 'idle'
+        current.shareViewerState = 'waiting'
+        current.shareSessionId = null
+        current.shareUrl = null
+      }
+      render()
+    }
+
+    ws.onerror = () => {
+      const current = panes.get(paneId)
+      if (!current || current.shareSocket !== ws) {
+        return
+      }
+      current.shareError = 'share connection failed'
+      current.shareStatus = 'error'
+      current.shareSessionId = null
+      current.shareUrl = null
+      current.statusMessage = current.shareError
+      clearPaneShareSocket(current)
+      render()
+    }
+  } catch (error) {
+    pane.shareStatus = 'error'
+    pane.shareSessionId = null
+    pane.shareUrl = null
+    const rawMessage = error instanceof Error ? error.message : 'failed to create share session'
+    pane.shareError =
+      rawMessage === 'Failed to fetch'
+        ? 'sharing service is unreachable (run worker:dev)'
+        : rawMessage
+    pane.statusMessage = pane.shareError
+    clearPaneShareSocket(pane)
+    render()
+  }
 }
 
 const isPortAlreadyUsed = (port: SerialPort, currentPaneId: string) => {
@@ -760,6 +1082,10 @@ const disconnectPane = async (paneId: string, appendNote = true) => {
   const pane = panes.get(paneId)
   if (!pane) {
     return
+  }
+
+  if (pane.shareStatus === 'creating' || pane.shareStatus === 'sharing') {
+    stopPaneSharing(paneId)
   }
 
   if (pane.activeTimerHandle !== null) {
@@ -1798,7 +2124,16 @@ const renderNode = (node: PaneTreeNode): string => {
         `timer on: ${escapeHtml(activeTimerCommand.label)} (${activeTimerCommand.intervalMs}ms)`,
       )
     }
-    if (pane.statusMessage) {
+    if (pane.shareStatus === 'creating') {
+      statusSegments.push('sharing: creating link')
+    } else if (pane.shareStatus === 'sharing') {
+      statusSegments.push(
+        pane.shareViewerState === 'connected' ? 'sharing: viewer connected' : 'sharing: waiting viewer',
+      )
+    } else if (pane.shareStatus === 'error' && pane.shareError) {
+      statusSegments.push(`sharing error: ${escapeHtml(pane.shareError)}`)
+    }
+    if (pane.statusMessage && pane.statusMessage !== pane.shareError) {
       statusSegments.push(escapeHtml(pane.statusMessage))
     }
 
@@ -1820,6 +2155,10 @@ const renderNode = (node: PaneTreeNode): string => {
                 <button class="menuItem" data-action="export-txt" data-pane-id="${pane.id}" type="button">Export TXT</button>
                 <button class="menuItem" data-action="export-pdf" data-pane-id="${pane.id}" type="button">Export PDF</button>
                 <button class="menuItem" data-action="clear-log" data-pane-id="${pane.id}" type="button">Clear</button>
+                ${pane.shareStatus === 'sharing' || pane.shareStatus === 'creating'
+                  ? `<button class="menuItem" data-action="share-copy-link" data-pane-id="${pane.id}" type="button" ${pane.shareUrl ? '' : 'disabled'}>Copy Share Link</button>
+                     <button class="menuItem" data-action="share-stop" data-pane-id="${pane.id}" type="button">Stop Sharing</button>`
+                  : `<button class="menuItem" data-action="share-start" data-pane-id="${pane.id}" type="button" ${pane.isConnected ? '' : 'disabled'}>Start Sharing</button>`}
                 <button class="menuItem checkItem" data-action="toggle-auto-scroll" data-pane-id="${pane.id}" type="button"><span class="checkMark">${pane.autoScroll ? '☑' : '☐'}</span> Auto-scroll (Alt+S)</button>
                 <button class="menuItem" data-action="font-smaller" data-pane-id="${pane.id}" type="button">Font -</button>
                 <button class="menuItem" data-action="font-larger" data-pane-id="${pane.id}" type="button">Font +</button>
@@ -2159,6 +2498,18 @@ const handlePaneAction = async (action: string, paneId: string) => {
       pane.rxLog = ''
       optionsOpenPaneId = null
       render()
+      return
+    case 'share-start':
+      optionsOpenPaneId = null
+      await startPaneSharing(paneId)
+      return
+    case 'share-copy-link':
+      optionsOpenPaneId = null
+      await copyShareLink(paneId)
+      return
+    case 'share-stop':
+      optionsOpenPaneId = null
+      stopPaneSharing(paneId, 'sharing stopped')
       return
     case 'send':
       await sendPaneText(paneId)
@@ -2800,6 +3151,9 @@ window.addEventListener('beforeunload', () => {
   for (const pane of panes.values()) {
     if (pane.activeTimerHandle !== null) {
       window.clearInterval(pane.activeTimerHandle)
+    }
+    if (pane.shareStatus === 'creating' || pane.shareStatus === 'sharing') {
+      clearPaneShareSocket(pane)
     }
     releaseConnectionLock(pane.connectedUartName)
   }
