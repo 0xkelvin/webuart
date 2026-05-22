@@ -2190,9 +2190,9 @@ const renderNode = (node: PaneTreeNode): string => {
         <section class="txPanel ${pane.txExpanded ? '' : 'collapsed'}" aria-hidden="${String(!pane.txExpanded)}">
           <textarea class="txInput" data-pane-id="${pane.id}" rows="1" placeholder="Type and press Enter to send (Shift+Enter for new line)">${escapeHtml(pane.txInput)}</textarea>
           <div class="txRow">
-            <label>
-              Line ending
-              <select class="lineEnding" data-pane-id="${pane.id}">
+            <label class="txLineEndingControl">
+              <span class="txRowLabel">EOL</span>
+              <select class="lineEnding txLineEndingSelect" data-pane-id="${pane.id}">
                 <option value="" ${pane.lineEnding === '' ? 'selected' : ''}>none</option>
                 <option value="\n" ${pane.lineEnding === '\n' ? 'selected' : ''}>LF (\\n)</option>
                 <option value="\r\n" ${pane.lineEnding === '\r\n' ? 'selected' : ''}>CRLF (\\r\\n)</option>
@@ -2211,7 +2211,7 @@ const renderNode = (node: PaneTreeNode): string => {
                 <span class="txInlineToggleText">Timer Cmd</span>
               </label>
             </div>
-            <button class="primary" data-action="send" data-pane-id="${pane.id}" type="button" ${pane.isConnected ? '' : 'disabled'}>Send</button>
+            <button class="primary txSendBtn" data-action="send" data-pane-id="${pane.id}" type="button" ${pane.isConnected ? '' : 'disabled'}>Send</button>
           </div>
           <div class="quickCmds ${pane.quickCommandsExpanded ? '' : 'collapsed'}" aria-label="Quick commands" aria-hidden="${String(!pane.quickCommandsExpanded)}">
             <div class="quickCmdsHeader">
