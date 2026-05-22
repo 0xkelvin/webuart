@@ -52,6 +52,8 @@ type PaneState = {
   txInput: string
   lineEnding: '' | '\n' | '\r\n' | '\r'
   txExpanded: boolean
+  quickCommandsExpanded: boolean
+  timerCommandsExpanded: boolean
   quickCommands: QuickCommand[]
   timerCommands: TimerCommand[]
   activeTimerCommandId: string | null
@@ -601,6 +603,8 @@ const createPane = (uartName?: string): PaneState => ({
   txInput: '',
   lineEnding: '\n',
   txExpanded: false,
+  quickCommandsExpanded: false,
+  timerCommandsExpanded: false,
   quickCommands: [],
   timerCommands: [],
   activeTimerCommandId: null,
@@ -1785,6 +1789,18 @@ const renderNode = (node: PaneTreeNode): string => {
     const statusText = pane.isConnected
       ? `connected - ${pane.connectedBaudRate ?? pane.settings.baudRate}`
       : 'disconnected'
+    const activeTimerCommand = pane.activeTimerCommandId
+      ? pane.timerCommands.find((command) => command.id === pane.activeTimerCommandId) ?? null
+      : null
+    const statusSegments = [`${escapeHtml(pane.uartName)}`, statusText]
+    if (activeTimerCommand) {
+      statusSegments.push(
+        `timer on: ${escapeHtml(activeTimerCommand.label)} (${activeTimerCommand.intervalMs}ms)`,
+      )
+    }
+    if (pane.statusMessage) {
+      statusSegments.push(escapeHtml(pane.statusMessage))
+    }
 
     return `
       <section class="pane ${isActive ? 'active' : ''}" data-pane-id="${pane.id}" tabindex="0">
@@ -1792,10 +1808,14 @@ const renderNode = (node: PaneTreeNode): string => {
           <div class="paneToolbar">
             <input class="paneNameInput" data-pane-id="${pane.id}" value="${escapeHtml(pane.uartName)}" maxlength="40" placeholder="uart-name" title="Click to rename" />
             <button class="ghost mini" data-action="settings" data-pane-id="${pane.id}" type="button" title="UART settings"><span class="btnIcon">⚙</span><span class="btnLabel"> Settings</span></button>
+            <label class="txToggle" title="Show or hide TX panel">
+              <input class="txToggleInput" data-pane-id="${pane.id}" type="checkbox" ${pane.txExpanded ? 'checked' : ''} />
+              <span class="txToggleTrack" aria-hidden="true"><span class="txToggleThumb"></span></span>
+              <span class="txToggleText">TX</span>
+            </label>
             <div class="optionsControl" data-pane-id="${pane.id}">
               <button class="ghost mini" data-action="toggle-options" data-pane-id="${pane.id}" type="button" title="Options">⋯</button>
               <div class="optionsMenu ${isMenuOpen ? '' : 'hidden'}" aria-hidden="${String(!isMenuOpen)}">
-                <button class="menuItem" data-action="toggle-tx" data-pane-id="${pane.id}" type="button">${pane.txExpanded ? 'Hide TX' : 'Show TX'}</button>
                 <button class="menuItem" data-action="copy-log" data-pane-id="${pane.id}" type="button">Copy Log</button>
                 <button class="menuItem" data-action="export-txt" data-pane-id="${pane.id}" type="button">Export TXT</button>
                 <button class="menuItem" data-action="export-pdf" data-pane-id="${pane.id}" type="button">Export PDF</button>
@@ -1816,7 +1836,7 @@ const renderNode = (node: PaneTreeNode): string => {
             </div>
             <button class="ghost mini ${pane.isConnected ? 'isConnected' : ''}" data-action="${connectAction}" data-pane-id="${pane.id}" type="button"><span class="btnIcon">⏻</span><span class="btnLabel"> ${connectLabel}</span></button>
           </div>
-          <p class="paneStatus">${escapeHtml(pane.uartName)} | ${statusText}${pane.statusMessage ? ` | ${escapeHtml(pane.statusMessage)}` : ''}</p>
+          <p class="paneStatus">${statusSegments.join(' | ')}</p>
         </header>
         <pre class="terminal" data-pane-id="${pane.id}" aria-live="polite" style="font-size: ${pane.terminalFontRem.toFixed(2)}rem; background: ${terminalTheme.bg}; color: ${terminalTheme.fg}; border-color: ${terminalTheme.border};">${escapeHtml(pane.rxLog)}</pre>
         <input class="terminalHiddenInput" data-pane-id="${pane.id}" type="password" aria-hidden="true" />
@@ -1832,11 +1852,23 @@ const renderNode = (node: PaneTreeNode): string => {
                 <option value="\r" ${pane.lineEnding === '\r' ? 'selected' : ''}>CR (\\r)</option>
               </select>
             </label>
+            <div class="txInlineToggles" aria-label="TX section visibility">
+              <label class="txInlineToggle" title="Show or hide quick commands">
+                <input class="txInlineToggleInput quickCommandsToggleInput" data-pane-id="${pane.id}" type="checkbox" ${pane.quickCommandsExpanded ? 'checked' : ''} />
+                <span class="txInlineToggleTrack" aria-hidden="true"><span class="txInlineToggleThumb"></span></span>
+                <span class="txInlineToggleText">Quick Cmd</span>
+              </label>
+              <label class="txInlineToggle" title="Show or hide timer commands">
+                <input class="txInlineToggleInput timerCommandsToggleInput" data-pane-id="${pane.id}" type="checkbox" ${pane.timerCommandsExpanded ? 'checked' : ''} />
+                <span class="txInlineToggleTrack" aria-hidden="true"><span class="txInlineToggleThumb"></span></span>
+                <span class="txInlineToggleText">Timer Cmd</span>
+              </label>
+            </div>
             <button class="primary" data-action="send" data-pane-id="${pane.id}" type="button" ${pane.isConnected ? '' : 'disabled'}>Send</button>
           </div>
-          <div class="quickCmds" aria-label="Quick commands">
+          <div class="quickCmds ${pane.quickCommandsExpanded ? '' : 'collapsed'}" aria-label="Quick commands" aria-hidden="${String(!pane.quickCommandsExpanded)}">
             <div class="quickCmdsHeader">
-              <span>Quick commands</span>
+              <span>Quick Cmd</span>
               <button class="ghost mini" data-action="quick-add" data-pane-id="${pane.id}" type="button">+ Add</button>
             </div>
             <div class="quickCmdsStrip" data-pane-id="${pane.id}">
@@ -1850,9 +1882,9 @@ const renderNode = (node: PaneTreeNode): string => {
                 : '<p class="quickCmdHint">No quick commands yet. Use + Add.</p>'}
             </div>
           </div>
-          <div class="quickCmds" aria-label="Timer commands">
+          <div class="quickCmds ${pane.timerCommandsExpanded ? '' : 'collapsed'}" aria-label="Timer commands" aria-hidden="${String(!pane.timerCommandsExpanded)}">
             <div class="quickCmdsHeader">
-              <span>Timer commands</span>
+              <span>Timer Cmd</span>
               <div class="timerActions">
                 <button class="ghost mini" data-action="timer-add" data-pane-id="${pane.id}" type="button">+ Add</button>
                 <button class="ghost mini" data-action="timer-stop" data-pane-id="${pane.id}" type="button" ${pane.activeTimerCommandId ? '' : 'disabled'}>Stop</button>
@@ -2017,6 +2049,19 @@ const hideTimerCommandMenu = () => {
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value))
 
+const getSplitRatioBounds = (axisSize: number) => {
+  const minPaneSizePx = 72
+  if (axisSize <= 0) {
+    return { minRatio: 0.5, maxRatio: 0.5 }
+  }
+
+  const minRatioFromSize = minPaneSizePx / axisSize
+  const minRatio = clamp(minRatioFromSize, 0.05, 0.45)
+  const maxRatio = 1 - minRatio
+
+  return { minRatio, maxRatio }
+}
+
 const updateSplitRatioFromPointer = (splitId: string, clientX: number, clientY: number) => {
   const splitEl = splitRootEl.querySelector<HTMLElement>(`.split[data-split-id="${splitId}"]`)
   if (!splitEl) {
@@ -2033,7 +2078,9 @@ const updateSplitRatioFromPointer = (splitId: string, clientX: number, clientY: 
   const rawRatio = isRow
     ? (clientX - rect.left) / rect.width
     : (clientY - rect.top) / rect.height
-  const ratio = clamp(rawRatio, 0.18, 0.82)
+  const axisSize = isRow ? rect.width : rect.height
+  const { minRatio, maxRatio } = getSplitRatioBounds(axisSize)
+  const ratio = clamp(rawRatio, minRatio, maxRatio)
 
   splitRatios.set(splitId, ratio)
   render()
@@ -2327,6 +2374,43 @@ splitRootEl.addEventListener('focusout', (event) => {
 
 splitRootEl.addEventListener('change', (event) => {
   const target = event.target as HTMLElement
+  if (
+    target.matches('.quickCommandsToggleInput[data-pane-id]') &&
+    target instanceof HTMLInputElement
+  ) {
+    const paneId = target.getAttribute('data-pane-id')
+    const pane = paneId ? panes.get(paneId) : null
+    if (pane) {
+      pane.quickCommandsExpanded = target.checked
+      render()
+    }
+    return
+  }
+
+  if (
+    target.matches('.timerCommandsToggleInput[data-pane-id]') &&
+    target instanceof HTMLInputElement
+  ) {
+    const paneId = target.getAttribute('data-pane-id')
+    const pane = paneId ? panes.get(paneId) : null
+    if (pane) {
+      pane.timerCommandsExpanded = target.checked
+      render()
+    }
+    return
+  }
+
+  if (target.matches('.txToggleInput[data-pane-id]') && target instanceof HTMLInputElement) {
+    const paneId = target.getAttribute('data-pane-id')
+    const pane = paneId ? panes.get(paneId) : null
+    if (pane) {
+      pane.txExpanded = target.checked
+      optionsOpenPaneId = null
+      render()
+    }
+    return
+  }
+
   if (target.matches('.lineEnding[data-pane-id]') && target instanceof HTMLSelectElement) {
     const paneId = target.getAttribute('data-pane-id')
     const pane = paneId ? panes.get(paneId) : null

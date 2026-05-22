@@ -37,11 +37,11 @@ body {
 .layout {
   width: 100%;
   margin: 0;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 0.75rem;
   min-height: calc(100svh - 1.5rem);
   height: calc(100svh - 1.5rem);
-  grid-template-rows: auto 1fr;
   overflow: hidden;
 }
 
@@ -124,14 +124,16 @@ textarea {
 }
 
 .splitRoot {
+  flex: 1 1 auto;
   min-height: 0;
-  height: 100%;
-  max-height: 100%;
-  min-block-size: clamp(21rem, 62svh, 50rem);
+  display: flex;
   overflow: hidden;
 }
 
+.splitRoot > .split,
 .splitRoot > .pane {
+  flex: 1 1 auto;
+  min-height: 0;
   height: 100%;
 }
 
@@ -261,6 +263,67 @@ button:disabled {
   align-items: center;
   flex-wrap: nowrap;
   min-width: 0;
+}
+
+.txToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.34rem;
+  border-radius: 999px;
+  background: #e7eef8;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.txToggleInput {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.txToggleTrack {
+  width: 1.8rem;
+  height: 1rem;
+  border-radius: 999px;
+  background: #9bb0cc;
+  border: 1px solid #8ea5c3;
+  padding: 1px;
+  display: inline-flex;
+  align-items: center;
+  transition: background 0.16s ease;
+}
+
+.txToggleThumb {
+  width: 0.76rem;
+  height: 0.76rem;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 20%);
+  transition: transform 0.16s ease;
+}
+
+.txToggleInput:checked + .txToggleTrack {
+  background: #40a5ea;
+  border-color: #2893de;
+}
+
+.txToggleInput:checked + .txToggleTrack .txToggleThumb {
+  transform: translateX(0.75rem);
+}
+
+.txToggleInput:focus-visible + .txToggleTrack {
+  outline: 2px solid rgb(14 165 233 / 55%);
+  outline-offset: 2px;
+}
+
+.txToggleText {
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .paneNameInput {
@@ -439,9 +502,80 @@ button:disabled {
   align-items: end;
 }
 
+.txInlineToggles {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.txInlineToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.18rem 0.35rem;
+  border-radius: 999px;
+  background: #e8eff9;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.txInlineToggleInput {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.txInlineToggleTrack {
+  width: 1.55rem;
+  height: 0.9rem;
+  border-radius: 999px;
+  background: #9bb0cc;
+  border: 1px solid #8ea5c3;
+  padding: 1px;
+  display: inline-flex;
+  align-items: center;
+  transition: background 0.16s ease;
+}
+
+.txInlineToggleThumb {
+  width: 0.64rem;
+  height: 0.64rem;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 20%);
+  transition: transform 0.16s ease;
+}
+
+.txInlineToggleInput:checked + .txInlineToggleTrack {
+  background: #40a5ea;
+  border-color: #2893de;
+}
+
+.txInlineToggleInput:checked + .txInlineToggleTrack .txInlineToggleThumb {
+  transform: translateX(0.6rem);
+}
+
+.txInlineToggleInput:focus-visible + .txInlineToggleTrack {
+  outline: 2px solid rgb(14 165 233 / 55%);
+  outline-offset: 2px;
+}
+
+.txInlineToggleText {
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
 .quickCmds {
   display: grid;
   gap: 0.4rem;
+}
+
+.quickCmds.collapsed {
+  display: none;
 }
 
 .quickCmdsHeader {
