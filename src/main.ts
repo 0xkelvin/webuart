@@ -347,6 +347,7 @@ const maxTimerIntervalMs = 3_600_000
 const warnFastTimerThresholdMs = 500
 const sharePingIntervalMs = 30_000
 const shareInitialHistoryChars = 80_000
+const txInputMaxHeightPx = 132
 const terminalThemes: TerminalTheme[] = [
   { id: 'ocean', label: 'Ocean', bg: '#050b14', fg: '#d7f4ff', border: '#1b3648' },
   { id: 'amber', label: 'Amber', bg: '#140f05', fg: '#ffd89b', border: '#5c4320' },
@@ -780,6 +781,13 @@ const appendPaneLog = (paneId: string, text: string) => {
   }
 
   broadcastPaneShareData(paneId, text)
+}
+
+const autoSizeTxInput = (textArea: HTMLTextAreaElement) => {
+  textArea.style.height = 'auto'
+  const nextHeight = Math.min(textArea.scrollHeight, txInputMaxHeightPx)
+  textArea.style.height = `${nextHeight}px`
+  textArea.style.overflowY = textArea.scrollHeight > txInputMaxHeightPx ? 'auto' : 'hidden'
 }
 
 const setPaneStatus = (paneId: string, message: string) => {
@@ -2180,7 +2188,7 @@ const renderNode = (node: PaneTreeNode): string => {
         <pre class="terminal" data-pane-id="${pane.id}" aria-live="polite" style="font-size: ${pane.terminalFontRem.toFixed(2)}rem; background: ${terminalTheme.bg}; color: ${terminalTheme.fg}; border-color: ${terminalTheme.border};">${escapeHtml(pane.rxLog)}</pre>
         <input class="terminalHiddenInput" data-pane-id="${pane.id}" type="password" aria-hidden="true" />
         <section class="txPanel ${pane.txExpanded ? '' : 'collapsed'}" aria-hidden="${String(!pane.txExpanded)}">
-          <textarea class="txInput" data-pane-id="${pane.id}" rows="3" placeholder="Type and press Enter to send (Shift+Enter for new line)">${escapeHtml(pane.txInput)}</textarea>
+          <textarea class="txInput" data-pane-id="${pane.id}" rows="1" placeholder="Type and press Enter to send (Shift+Enter for new line)">${escapeHtml(pane.txInput)}</textarea>
           <div class="txRow">
             <label>
               Line ending
@@ -2269,6 +2277,13 @@ const render = () => {
     const terminalEl = splitRootEl.querySelector<HTMLElement>(`.terminal[data-pane-id="${pane.id}"]`)
     if (terminalEl && pane.autoScroll) {
       terminalEl.scrollTop = terminalEl.scrollHeight
+    }
+
+    const txInputEl = splitRootEl.querySelector<HTMLTextAreaElement>(
+      `.txInput[data-pane-id="${pane.id}"]`,
+    )
+    if (txInputEl) {
+      autoSizeTxInput(txInputEl)
     }
   }
 }
@@ -2700,6 +2715,7 @@ splitRootEl.addEventListener('input', (event) => {
     const pane = paneId ? panes.get(paneId) : null
     if (pane && target instanceof HTMLTextAreaElement) {
       pane.txInput = target.value
+      autoSizeTxInput(target)
     }
   }
 })

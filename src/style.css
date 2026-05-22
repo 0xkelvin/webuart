@@ -491,6 +491,13 @@ button:disabled {
   gap: 0.5rem;
 }
 
+.txInput {
+  min-height: 2.1rem;
+  max-height: 8.25rem;
+  resize: none;
+  overflow-y: hidden;
+}
+
 .txPanel.collapsed {
   display: none;
 }
