@@ -103,6 +103,29 @@ Expected:
 - `POST` returns `201` with `sessionId` and `hostToken`.
 - `GET /api/sessions` returns `404` by design (route is POST only).
 
+## Troubleshooting
+
+### Viewer link redirects to `/webuart/uart-a`
+
+If opening `https://your-domain/viewer.html?s=<session-id>` redirects to the main app route, the frontend build is usually missing `dist/viewer.html`.
+
+This project uses Vite multi-page build via `vite.config.ts` so both pages are emitted:
+- `dist/index.html`
+- `dist/viewer.html`
+
+Quick verification:
+
+```bash
+npm run build
+ls -la dist
+```
+
+If `viewer.html` is missing, check `vite.config.ts` and redeploy the frontend container:
+
+```bash
+docker compose up -d --build
+```
+
 ## How to use
 
 1. Plug USB-UART adapter/device into your computer.
