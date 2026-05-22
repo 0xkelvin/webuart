@@ -10,3 +10,6 @@ bindings = [
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionRoom"]
+
+[vars]
+ALLOWED_ORIGINS = "https://vietmq.com,https://www.vietmq.com"
