@@ -2341,10 +2341,9 @@ const closeActivePane = async () => {
 
 const showPaneMenu = (x: number, y: number, paneId: string) => {
   menuPaneId = paneId
-  paneMenuEl.style.left = `${x}px`
-  paneMenuEl.style.top = `${y}px`
   paneMenuEl.classList.remove('hidden')
   paneMenuEl.setAttribute('aria-hidden', 'false')
+  positionPaneMenu(paneMenuEl, x, y)
 }
 
 const hidePaneMenu = () => {
@@ -2353,13 +2352,28 @@ const hidePaneMenu = () => {
   paneMenuEl.setAttribute('aria-hidden', 'true')
 }
 
+const positionPaneMenu = (menuEl: HTMLElement, x: number, y: number) => {
+  const viewportPadding = 8
+
+  menuEl.style.left = `${x}px`
+  menuEl.style.top = `${y}px`
+
+  const rect = menuEl.getBoundingClientRect()
+  const maxLeft = Math.max(viewportPadding, window.innerWidth - rect.width - viewportPadding)
+  const maxTop = Math.max(viewportPadding, window.innerHeight - rect.height - viewportPadding)
+  const left = Math.min(maxLeft, Math.max(viewportPadding, x))
+  const top = Math.min(maxTop, Math.max(viewportPadding, y))
+
+  menuEl.style.left = `${left}px`
+  menuEl.style.top = `${top}px`
+}
+
 const showQuickCommandMenu = (x: number, y: number, paneId: string, commandId: string) => {
   quickCommandMenuPaneId = paneId
   quickCommandMenuCommandId = commandId
-  quickCommandMenuEl.style.left = `${x}px`
-  quickCommandMenuEl.style.top = `${y}px`
   quickCommandMenuEl.classList.remove('hidden')
   quickCommandMenuEl.setAttribute('aria-hidden', 'false')
+  positionPaneMenu(quickCommandMenuEl, x, y)
 }
 
 const hideQuickCommandMenu = () => {
@@ -2372,10 +2386,9 @@ const hideQuickCommandMenu = () => {
 const showTimerCommandMenu = (x: number, y: number, paneId: string, commandId: string) => {
   timerCommandMenuPaneId = paneId
   timerCommandMenuCommandId = commandId
-  timerCommandMenuEl.style.left = `${x}px`
-  timerCommandMenuEl.style.top = `${y}px`
   timerCommandMenuEl.classList.remove('hidden')
   timerCommandMenuEl.setAttribute('aria-hidden', 'false')
+  positionPaneMenu(timerCommandMenuEl, x, y)
 }
 
 const hideTimerCommandMenu = () => {
