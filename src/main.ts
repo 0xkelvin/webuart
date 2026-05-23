@@ -1,4 +1,13 @@
 import './style.css'
+import {
+  connectSerialSession,
+  disconnectSerialSession,
+  runSerialReadLoop,
+  writeSerialBytes,
+  writeSerialText,
+} from './serialService'
+import { createPaneStore } from './paneStore'
+import { getShareApiBase, getShareWsBase } from './shareConfig'
 
 type Parity = 'none' | 'even' | 'odd'
 type FlowControl = 'none' | 'hardware'
@@ -91,33 +100,6 @@ type PaneTreeNode =
       first: PaneTreeNode
       second: PaneTreeNode
     }
-
-declare global {
-  interface Navigator {
-    serial?: {
-      requestPort: () => Promise<SerialPort>
-    }
-  }
-
-  interface SerialPort {
-    open: (options: {
-      baudRate: number
-      dataBits?: 7 | 8
-      stopBits?: 1 | 2
-      parity?: Parity
-      bufferSize?: number
-      flowControl?: FlowControl
-    }) => Promise<void>
-    close: () => Promise<void>
-    readable: ReadableStream<Uint8Array> | null
-    writable: WritableStream<Uint8Array> | null
-  }
-
-  interface Window {
-    __ONLINE_UART_SHARE_API_BASE__?: string
-    __ONLINE_UART_SHARE_WS_BASE__?: string
-  }
-}
 
 const app = document.querySelector<HTMLDivElement>('#app')
 if (!app) {
@@ -390,48 +372,6 @@ const createTimerCommandId = () =>
     ? crypto.randomUUID()
     : `tm-${Date.now()}-${Math.random().toString(16).slice(2)}`
 
-const isLocalHostName = (hostname: string) =>
-  hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
-
-const getShareConfigMeta = (name: string) => {
-  const content = document
-    .querySelector<HTMLMetaElement>(`meta[name="${name}"]`)
-    ?.getAttribute('content')
-    ?.trim()
-  return content && content.length > 0 ? content : null
-}
-
-const getShareApiBase = () => {
-  if (window.__ONLINE_UART_SHARE_API_BASE__) {
-    return window.__ONLINE_UART_SHARE_API_BASE__
-  }
-  const metaApiBase = getShareConfigMeta('online-uart-share-api-base')
-  if (metaApiBase) {
-    return metaApiBase
-  }
-  return isLocalHostName(window.location.hostname)
-    ? 'http://localhost:8787'
-    : window.location.origin
-}
-
-const getShareWsBase = () => {
-  if (window.__ONLINE_UART_SHARE_WS_BASE__) {
-    return window.__ONLINE_UART_SHARE_WS_BASE__
-  }
-  const metaWsBase = getShareConfigMeta('online-uart-share-ws-base')
-  if (metaWsBase) {
-    return metaWsBase
-  }
-  const apiBase = getShareApiBase()
-  if (apiBase.startsWith('https://')) {
-    return `wss://${apiBase.slice('https://'.length)}`
-  }
-  if (apiBase.startsWith('http://')) {
-    return `ws://${apiBase.slice('http://'.length)}`
-  }
-  return apiBase
-}
-
 const getTerminalTheme = (themeId: string): TerminalTheme => {
   const theme = terminalThemes.find((item) => item.id === themeId)
   return theme ?? terminalThemes[0]
@@ -620,7 +560,7 @@ if (
 
 let paneIdCounter = 0
 let splitIdCounter = 0
-const panes = new Map<string, PaneState>()
+const panes = createPaneStore<PaneState>()
 const splitRatios = new Map<string, number>()
 let activePaneId = ''
 let rootNode: PaneTreeNode
@@ -763,14 +703,16 @@ const pickNextPaneUartName = () => {
 }
 
 const appendPaneLog = (paneId: string, text: string) => {
-  const pane = panes.get(paneId)
+  const pane = panes.mutate(paneId, (currentPane) => {
+    currentPane.rxLog += text
+    if (currentPane.rxLog.length > maxLogChars) {
+      currentPane.rxLog = currentPane.rxLog.slice(-maxLogChars)
+    }
+  })
   if (!pane) {
     return
   }
-  pane.rxLog += text
-  if (pane.rxLog.length > maxLogChars) {
-    pane.rxLog = pane.rxLog.slice(-maxLogChars)
-  }
+
   const terminalEl = splitRootEl.querySelector<HTMLElement>(`.terminal[data-pane-id="${paneId}"]`)
   if (!terminalEl) {
     return
@@ -791,11 +733,12 @@ const autoSizeTxInput = (textArea: HTMLTextAreaElement) => {
 }
 
 const setPaneStatus = (paneId: string, message: string) => {
-  const pane = panes.get(paneId)
+  const pane = panes.mutate(paneId, (currentPane) => {
+    currentPane.statusMessage = message
+  })
   if (!pane) {
     return
   }
-  pane.statusMessage = message
   render()
 }
 
@@ -824,14 +767,14 @@ const stopPaneSharing = (paneId: string, statusMessage?: string) => {
     return
   }
   clearPaneShareSocket(pane)
-  pane.shareStatus = 'idle'
-  pane.shareViewerState = 'waiting'
-  pane.shareSessionId = null
-  pane.shareUrl = null
-  pane.shareError = null
-  if (statusMessage) {
-    pane.statusMessage = statusMessage
-  }
+  panes.markShareIdle(
+    paneId,
+    statusMessage
+      ? {
+          statusMessage,
+        }
+      : undefined,
+  )
   render()
 }
 
@@ -876,8 +819,10 @@ const broadcastPaneShareData = (paneId: string, payload: string) => {
   try {
     pane.shareSocket.send(JSON.stringify({ type: 'data', payload }))
   } catch {
-    pane.shareError = 'share relay send failed'
-    pane.shareStatus = 'error'
+    panes.markShareError(paneId, {
+      error: 'share relay send failed',
+      clearSession: false,
+    })
     clearPaneShareSocket(pane)
     render()
   }
@@ -898,12 +843,9 @@ const startPaneSharing = async (paneId: string) => {
   }
 
   clearPaneShareSocket(pane)
-  pane.shareStatus = 'creating'
-  pane.shareViewerState = 'waiting'
-  pane.shareSessionId = null
-  pane.shareUrl = null
-  pane.shareError = null
-  pane.statusMessage = 'creating share link...'
+  panes.markShareCreating(paneId, {
+    statusMessage: 'creating share link...',
+  })
   render()
 
   try {
@@ -923,13 +865,12 @@ const startPaneSharing = async (paneId: string) => {
     const wsUrl = `${getShareWsBase()}/api/sessions/${body.sessionId}/ws?role=host`
     const ws = new WebSocket(wsUrl)
 
-    pane.shareSessionId = body.sessionId
-    pane.shareUrl = `${window.location.origin}/viewer.html?s=${encodeURIComponent(body.sessionId)}`
-    pane.shareSocket = ws
-    pane.shareStatus = 'creating'
-    pane.shareViewerState = 'waiting'
-    pane.shareError = null
-    pane.statusMessage = 'authenticating share session...'
+    panes.setShareSession(paneId, {
+      sessionId: body.sessionId,
+      shareUrl: `${window.location.origin}/viewer.html?s=${encodeURIComponent(body.sessionId)}`,
+      shareSocket: ws,
+      statusMessage: 'authenticating share session...',
+    })
     render()
 
     ws.onopen = () => {
@@ -957,10 +898,9 @@ const startPaneSharing = async (paneId: string) => {
       }
 
       if (message.type === 'auth_ok') {
-        current.shareStatus = 'sharing'
-        current.shareViewerState = 'waiting'
-        current.shareError = null
-        current.statusMessage = 'share link ready'
+        panes.markShareReady(paneId, {
+          statusMessage: 'share link ready',
+        })
         if (current.sharePingHandle !== null) {
           window.clearInterval(current.sharePingHandle)
         }
@@ -981,15 +921,19 @@ const startPaneSharing = async (paneId: string) => {
       }
 
       if (message.type === 'viewer_connected') {
-        current.shareViewerState = 'connected'
-        current.statusMessage = 'viewer connected'
+        panes.setShareViewerState(paneId, {
+          viewerState: 'connected',
+          statusMessage: 'viewer connected',
+        })
         render()
         return
       }
 
       if (message.type === 'viewer_disconnected') {
-        current.shareViewerState = 'waiting'
-        current.statusMessage = 'viewer disconnected'
+        panes.setShareViewerState(paneId, {
+          viewerState: 'waiting',
+          statusMessage: 'viewer disconnected',
+        })
         render()
         return
       }
@@ -1000,11 +944,9 @@ const startPaneSharing = async (paneId: string) => {
       }
 
       if (message.type === 'error') {
-        current.shareError = message.message ?? 'share session error'
-        current.shareStatus = 'error'
-        current.shareSessionId = null
-        current.shareUrl = null
-        current.statusMessage = current.shareError
+        panes.markShareError(paneId, {
+          error: message.message ?? 'share session error',
+        })
         clearPaneShareSocket(current)
         render()
       }
@@ -1017,10 +959,7 @@ const startPaneSharing = async (paneId: string) => {
       }
       clearPaneShareSocket(current)
       if (current.shareStatus !== 'error') {
-        current.shareStatus = 'idle'
-        current.shareViewerState = 'waiting'
-        current.shareSessionId = null
-        current.shareUrl = null
+        panes.markShareIdle(paneId)
       }
       render()
     }
@@ -1030,24 +969,21 @@ const startPaneSharing = async (paneId: string) => {
       if (!current || current.shareSocket !== ws) {
         return
       }
-      current.shareError = 'share connection failed'
-      current.shareStatus = 'error'
-      current.shareSessionId = null
-      current.shareUrl = null
-      current.statusMessage = current.shareError
+      panes.markShareError(paneId, {
+        error: 'share connection failed',
+      })
       clearPaneShareSocket(current)
       render()
     }
   } catch (error) {
-    pane.shareStatus = 'error'
-    pane.shareSessionId = null
-    pane.shareUrl = null
     const rawMessage = error instanceof Error ? error.message : 'failed to create share session'
-    pane.shareError =
+    const shareError =
       rawMessage === 'Failed to fetch'
         ? 'sharing service is unreachable (run worker:dev)'
         : rawMessage
-    pane.statusMessage = pane.shareError
+    panes.markShareError(paneId, {
+      error: shareError,
+    })
     clearPaneShareSocket(pane)
     render()
   }
@@ -1098,31 +1034,14 @@ const disconnectPane = async (paneId: string, appendNote = true) => {
 
   if (pane.activeTimerHandle !== null) {
     window.clearInterval(pane.activeTimerHandle)
-    pane.activeTimerHandle = null
-    pane.activeTimerCommandId = null
-    pane.timerSendBusy = false
+    panes.markTimerStopped(paneId)
   }
 
-  pane.isReading = false
-  try {
-    await pane.reader?.cancel()
-  } catch {
-    // Ignore cancel errors while disconnecting.
-  }
-  try {
-    await pane.serialPort?.close()
-  } catch {
-    // Ignore close errors while disconnecting.
-  }
+  await disconnectSerialSession(pane)
 
   releaseConnectionLock(pane.connectedUartName)
 
-  pane.serialPort = null
-  pane.reader = null
-  pane.isConnected = false
-  pane.connectedBaudRate = null
-  pane.connectedUartName = null
-  pane.statusMessage = ''
+  panes.markDisconnected(paneId)
   if (appendNote) {
     appendPaneLog(paneId, '\n[Disconnected]\n')
   }
@@ -1133,43 +1052,19 @@ const disconnectPane = async (paneId: string, appendNote = true) => {
 
 const readLoop = async (paneId: string) => {
   const pane = panes.get(paneId)
-  if (!pane?.serialPort?.readable) {
+  if (!pane) {
     return
   }
 
-  pane.isReading = true
-  try {
-    while (true) {
-      const current = panes.get(paneId)
-      if (!current || !current.serialPort?.readable || !current.isReading) {
-        break
-      }
-
-      const reader = current.serialPort.readable.getReader()
-      current.reader = reader
-
-      try {
-        while (current.isReading) {
-          const { value, done } = await reader.read()
-          if (done) {
-            break
-          }
-          if (value) {
-            appendPaneLog(paneId, sanitizeRxText(textDecoder.decode(value, { stream: true })))
-          }
-        }
-      } finally {
-        reader.releaseLock()
-        const latest = panes.get(paneId)
-        if (latest) {
-          latest.reader = null
-        }
-      }
-    }
-  } catch (error) {
-    appendPaneLog(paneId, `\n[Read error] ${(error as Error).message}\n`)
-    setPaneStatus(paneId, 'read error')
-  }
+  await runSerialReadLoop(pane, {
+    onChunk: (chunk) => {
+      appendPaneLog(paneId, sanitizeRxText(textDecoder.decode(chunk, { stream: true })))
+    },
+    onError: (errorMessage) => {
+      appendPaneLog(paneId, `\n[Read error] ${errorMessage}\n`)
+      setPaneStatus(paneId, 'read error')
+    },
+  })
 }
 
 const connectPane = async (paneId: string) => {
@@ -1199,9 +1094,20 @@ const connectPane = async (paneId: string) => {
   try {
     pane.statusMessage = 'waiting for port selection'
     render()
-    const selectedPort = await navigator.serial.requestPort()
+    const selectedPort = await connectSerialSession(pane, {
+      serial: navigator.serial,
+      settings: {
+        baudRate: pane.settings.baudRate,
+        dataBits: pane.settings.dataBits,
+        stopBits: pane.settings.stopBits,
+        parity: pane.settings.parity,
+        flowControl: pane.settings.flowControl,
+        bufferSize: pane.settings.bufferSize,
+      },
+    })
 
     if (isPortAlreadyUsed(selectedPort, paneId)) {
+      await disconnectSerialSession(pane)
       releaseConnectionLock(pane.uartName)
       pane.statusMessage = 'this serial port is already connected in another pane'
       render()
@@ -1209,20 +1115,10 @@ const connectPane = async (paneId: string) => {
       return
     }
 
-    await selectedPort.open({
+    panes.markConnected(paneId, {
       baudRate: pane.settings.baudRate,
-      dataBits: pane.settings.dataBits,
-      stopBits: pane.settings.stopBits,
-      parity: pane.settings.parity,
-      flowControl: pane.settings.flowControl,
-      bufferSize: pane.settings.bufferSize,
+      uartName: pane.uartName,
     })
-
-    pane.serialPort = selectedPort
-    pane.isConnected = true
-    pane.connectedBaudRate = pane.settings.baudRate
-    pane.connectedUartName = pane.uartName
-    pane.statusMessage = ''
     appendPaneLog(paneId, '\n[Connected]\n')
 
     updateHeartbeat()
@@ -1230,11 +1126,10 @@ const connectPane = async (paneId: string) => {
     void readLoop(paneId)
   } catch (error) {
     releaseConnectionLock(pane.uartName)
-    pane.serialPort = null
-    pane.isConnected = false
-    pane.connectedBaudRate = null
-    pane.connectedUartName = null
-    pane.statusMessage = `connect failed: ${(error as Error).message}`
+    await disconnectSerialSession(pane)
+    panes.markConnectFailed(paneId, {
+      statusMessage: `connect failed: ${(error as Error).message}`,
+    })
     render()
   }
 }
@@ -1245,14 +1140,11 @@ const sendPaneText = async (paneId: string) => {
     return
   }
 
-  const writer = pane.serialPort.writable.getWriter()
   try {
-    await writer.write(textEncoder.encode(pane.txInput + pane.lineEnding))
+    await writeSerialText(pane, pane.txInput + pane.lineEnding, textEncoder)
   } catch (error) {
     pane.statusMessage = `send failed: ${(error as Error).message}`
     render()
-  } finally {
-    writer.releaseLock()
   }
 }
 
@@ -1326,9 +1218,8 @@ const sendCommandPayload = async (
     return false
   }
 
-  const writer = pane.serialPort.writable.getWriter()
   try {
-    await writer.write(bytes)
+    await writeSerialBytes(pane, bytes)
     if (showSuccessStatus) {
       pane.statusMessage = `sent ${origin} command ${command.label}`
       render()
@@ -1338,8 +1229,6 @@ const sendCommandPayload = async (
     pane.statusMessage = `send failed: ${(error as Error).message}`
     render()
     return false
-  } finally {
-    writer.releaseLock()
   }
 }
 
@@ -1352,12 +1241,14 @@ const stopPaneTimer = (paneId: string, statusMessage?: string) => {
   if (pane.activeTimerHandle !== null) {
     window.clearInterval(pane.activeTimerHandle)
   }
-  pane.activeTimerHandle = null
-  pane.activeTimerCommandId = null
-  pane.timerSendBusy = false
-  if (statusMessage) {
-    pane.statusMessage = statusMessage
-  }
+  panes.markTimerStopped(
+    paneId,
+    statusMessage
+      ? {
+          statusMessage,
+        }
+      : undefined,
+  )
   render()
 }
 
@@ -1380,9 +1271,9 @@ const runPaneTimerTick = async (paneId: string, commandId: string) => {
     return
   }
 
-  pane.timerSendBusy = true
+  panes.setTimerSendBusy(paneId, { busy: true })
   const ok = await sendCommandPayload(paneId, command, 'timer', false)
-  pane.timerSendBusy = false
+  panes.setTimerSendBusy(paneId, { busy: false })
   if (!ok) {
     stopPaneTimer(paneId, `timer stopped: ${command.label} send failed`)
   }
@@ -1415,15 +1306,17 @@ const startPaneTimer = (paneId: string, commandId: string) => {
 
   if (pane.activeTimerHandle !== null) {
     window.clearInterval(pane.activeTimerHandle)
-    pane.activeTimerHandle = null
+    panes.markTimerStopped(paneId)
   }
 
-  pane.activeTimerCommandId = command.id
-  pane.timerSendBusy = false
-  pane.activeTimerHandle = window.setInterval(() => {
+  const timerHandle = window.setInterval(() => {
     void runPaneTimerTick(paneId, command.id)
   }, command.intervalMs)
-  pane.statusMessage = `timer started: ${command.label} every ${command.intervalMs}ms`
+  panes.markTimerStarted(paneId, {
+    commandId: command.id,
+    handle: timerHandle,
+    statusMessage: `timer started: ${command.label} every ${command.intervalMs}ms`,
+  })
   render()
 }
 
@@ -1588,13 +1481,13 @@ const saveQuickCommandFromModal = () => {
       closeQuickCommandModal()
       return
     }
-    pane.quickCommands[commandIndex] = {
+    panes.replaceQuickCommand(quickCommandPaneId, quickCommandEditId, {
       ...pane.quickCommands[commandIndex],
       ...nextCommand,
-    }
+    })
     pane.statusMessage = `updated quick command ${nextCommand.label}`
   } else {
-    pane.quickCommands.push({
+    panes.addQuickCommand(quickCommandPaneId, {
       id: createQuickCommandId(),
       ...nextCommand,
     })
@@ -1614,15 +1507,14 @@ const deleteQuickCommand = (paneId: string, commandId: string, closeModal = fals
     return
   }
 
-  const commandIndex = pane.quickCommands.findIndex((item) => item.id === commandId)
-  if (commandIndex < 0) {
+  const removed = panes.removeQuickCommand(paneId, commandId)
+  if (!removed) {
     if (closeModal) {
       closeQuickCommandModal()
     }
     return
   }
 
-  const [removed] = pane.quickCommands.splice(commandIndex, 1)
   pane.statusMessage = `deleted quick command ${removed.label}`
   if (closeModal) {
     closeQuickCommandModal()
@@ -1789,16 +1681,16 @@ const saveTimerCommandFromModal = () => {
       return
     }
     const activeBeingEdited = pane.activeTimerCommandId === timerCommandEditId
-    pane.timerCommands[commandIndex] = {
+    panes.replaceTimerCommand(timerCommandPaneId, timerCommandEditId, {
       ...pane.timerCommands[commandIndex],
       ...nextCommand,
-    }
+    })
     pane.statusMessage = `updated timer command ${nextCommand.label}`
     if (activeBeingEdited) {
       startPaneTimer(timerCommandPaneId, timerCommandEditId)
     }
   } else {
-    pane.timerCommands.push({
+    panes.addTimerCommand(timerCommandPaneId, {
       id: createTimerCommandId(),
       ...nextCommand,
     })
@@ -1818,8 +1710,8 @@ const deleteTimerCommand = (paneId: string, commandId: string, closeModal = fals
     return
   }
 
-  const commandIndex = pane.timerCommands.findIndex((item) => item.id === commandId)
-  if (commandIndex < 0) {
+  const removed = panes.removeTimerCommand(paneId, commandId)
+  if (!removed) {
     if (closeModal) {
       closeTimerCommandModal()
     }
@@ -1829,7 +1721,6 @@ const deleteTimerCommand = (paneId: string, commandId: string, closeModal = fals
   if (pane.activeTimerCommandId === commandId) {
     stopPaneTimer(paneId)
   }
-  const [removed] = pane.timerCommands.splice(commandIndex, 1)
   pane.statusMessage = `deleted timer command ${removed.label}`
   if (closeModal) {
     closeTimerCommandModal()
@@ -2844,18 +2735,13 @@ splitRootEl.addEventListener('keydown', (event) => {
     const pane = paneId ? panes.get(paneId) : null
     const input = target as HTMLInputElement
     if (pane && input.value && pane.serialPort?.writable) {
-      const writer = pane.serialPort.writable.getWriter()
-      writer
-        .write(textEncoder.encode(input.value + pane.lineEnding))
+      void writeSerialText(pane, input.value + pane.lineEnding, textEncoder)
         .then(() => {
           input.value = ''
         })
         .catch((error) => {
           pane.statusMessage = `send failed: ${(error as Error).message}`
           render()
-        })
-        .finally(() => {
-          writer.releaseLock()
         })
     }
   }
