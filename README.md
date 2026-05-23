@@ -18,7 +18,7 @@ A browser-based USB-UART terminal using the Web Serial API.
 
 ## Requirements
 
-- Chrome or Edge desktop (Web Serial API)
+- Chrome, Edge, or Firefox desktop (Web Serial API)
 - HTTPS deployment, or localhost for local development
 - USB-UART driver installed in OS if needed (chip dependent)
 
@@ -32,7 +32,7 @@ npm run dev
 <img width="1370" height="951" alt="image" src="https://github.com/user-attachments/assets/a2bcae06-30a4-4951-89f7-66ff336ed94a" />
 
 
-Open the shown localhost URL in Chrome/Edge.
+Open the shown localhost URL in Chrome, Edge, or Firefox.
 
 ## Build
 
@@ -129,7 +129,7 @@ docker compose up -d --build
 ## How to use
 
 1. Plug USB-UART adapter/device into your computer.
-2. Open the app in Chrome/Edge.
+2. Open the app in Chrome, Edge, or Firefox.
 3. Set UART parameters.
 4. Click Connect.
 5. In browser serial picker, select the UART port.
@@ -138,6 +138,6 @@ docker compose up -d --build
 
 ## Known limitations
 
-- Not supported in Safari/Firefox.
+- Safari support is limited.
 - Browser requires explicit user gesture for `requestPort()`.
 - Zero latency is not possible; this app aims for low latency.
