@@ -243,122 +243,57 @@ body {
   gap: 0.35rem;
 }
 
-.flashSlotList {
-  display: grid;
-  gap: 0.45rem;
-}
-
-.flashSlotEmpty {
-  margin: 0;
-  padding: 0.85rem;
-  background: #eef4fb;
-  border-radius: 8px;
-  text-align: center;
-  color: var(--subtle);
-  font-size: 0.84rem;
-}
-
-.flashSlot {
-  display: grid;
-  grid-template-columns: minmax(6rem, 7rem) 1fr auto;
-  align-items: center;
-  gap: 0.7rem;
-  padding: 0.55rem 0.7rem;
-  background: #f1f6fc;
-  border: 1px solid #d3dfee;
-  border-radius: 10px;
-  transition: background 0.18s ease, border-color 0.18s ease;
-}
-
-.flashSlot.isReady {
-  background: rgb(34 197 94 / 8%);
-  border-color: rgb(34 197 94 / 32%);
-}
-
-.flashSlotAddressBadge {
-  display: grid;
-  gap: 0.15rem;
-  padding: 0.3rem 0.55rem;
-  background: #0f2436;
-  color: #d7f4ff;
-  border-radius: 8px;
-  text-align: center;
-}
-
-.flashSlotAddressLabel {
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgb(215 244 255 / 65%);
-}
-
-.flashSlotAddressValue {
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-weight: 700;
-  font-size: 0.88rem;
-  letter-spacing: 0.02em;
-}
-
-.flashSlotMain {
-  min-width: 0;
-}
-
-.flashSlotLabel {
-  margin: 0;
-  font-weight: 600;
-  font-size: 0.88rem;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: flex;
-  align-items: baseline;
-  gap: 0.45rem;
-}
-
-.flashSlotFilename {
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-size: 0.74rem;
-  font-weight: 500;
-  color: var(--subtle);
-}
-
-.flashSlotFile {
-  margin: 0.18rem 0 0;
-  color: var(--subtle);
-  font-size: 0.78rem;
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  overflow: hidden;
-}
-
-.flashSlotFileName {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
-}
-
-.flashSlotFileSize {
-  flex-shrink: 0;
-  background: #dfeaf6;
-  color: var(--text);
-  border-radius: 6px;
-  padding: 0.02rem 0.34rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-}
-
-.flashSlotFileEmpty {
-  font-style: italic;
-}
-
-.flashSlotActions {
+.flashZipLabel {
   display: inline-flex;
-  gap: 0.32rem;
   align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.flashZipLabel:hover {
+  filter: brightness(1.05);
+}
+
+.flashZipStatus {
+  margin: 0;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--subtle);
+  background: #eef4fb;
+  border: 1px solid #d3dfee;
+  border-radius: 8px;
+}
+
+.flashZipStatus code {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 0.05rem 0.32rem;
+  border-radius: 4px;
+  color: var(--accent-strong);
+}
+
+.flashZipStatus.isOk {
+  background: rgb(34 197 94 / 10%);
+  border-color: rgb(34 197 94 / 38%);
+  color: #166534;
+}
+
+.flashZipStatus.isOk code {
+  background: rgba(255, 255, 255, 0.8);
+  color: #15803d;
+}
+
+.flashZipStatus.isPartial {
+  background: rgb(245 158 11 / 12%);
+  border-color: rgb(245 158 11 / 38%);
+  color: #92400e;
+}
+
+.flashZipStatus.isError {
+  background: rgb(220 38 38 / 10%);
+  border-color: rgb(220 38 38 / 38%);
+  color: #991b1b;
 }
 
 .flashActionsCard {
@@ -482,8 +417,13 @@ body {
 .flashConsoleOutput {
   margin: 0;
   min-height: 9rem;
-  max-height: 18rem;
+  /* Default ~35vh keeps the console readable on small windows while letting
+     users drag the handle for more. max-height: none so the resize handle is
+     not capped at a small fixed height like before. */
+  height: clamp(12rem, 35vh, 28rem);
+  max-height: none;
   overflow: auto;
+  resize: vertical;
   padding: 0.7rem 0.85rem;
   background: #050b14;
   color: #b8ffc6;
@@ -491,7 +431,7 @@ body {
   font-size: 0.78rem;
   border-radius: 8px;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- Config tab ---------- */
@@ -629,6 +569,62 @@ body {
 
 .configConsoleCard {
   padding: 0.85rem 1rem;
+}
+
+/* ---------- Responsive Config layout ---------- */
+/* The Config tab needs to FIT THE VIEWPORT (no outer scroll). We make
+   `.configView` a flex column, then let the JSON editor and Console card
+   share whatever vertical space is left after the header + actions row. */
+
+.configView {
+  /* Override `.flashView { overflow: auto }`. The Config tab manages its own
+     overflow internally so users never need to scroll the whole panel. */
+  overflow: hidden;
+  padding-right: 0;
+}
+
+.configLayout {
+  /* Replace the grid layout with a flex column that fills the tab. */
+  display: flex;
+  flex-direction: column;
+  width: min(940px, 100%);
+  margin: 0 auto;
+  padding: 0.2rem 0 0.6rem;
+  gap: 0.6rem;
+  height: 100%;
+  min-height: 0;
+}
+
+.configLayout > .flashHeader,
+.configLayout > .flashActionsCard {
+  flex: 0 0 auto;
+}
+
+.configLayout > .flashFilesCard,
+.configLayout > .flashConsoleCard {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Make the JSON editor and the Console <pre> fill their card's remaining
+   space and scroll internally. Drop the fixed min/max heights from the
+   non-responsive style above. */
+.configLayout .configJsonEditor {
+  flex: 1 1 auto;
+  min-height: 6rem;
+  max-height: none;
+  height: auto;
+  resize: none;
+}
+
+.configLayout .configConsoleCard .flashConsoleOutput {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 6rem;
+  max-height: none;
+  resize: none;
 }
 
 .socialDock {

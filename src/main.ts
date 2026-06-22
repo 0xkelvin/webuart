@@ -33,6 +33,7 @@ import {
   type EndCommand,
   type ResetMode,
 } from './configService'
+import { extractFirmwareZip } from './zipArtifact'
 
 type Parity = 'none' | 'even' | 'odd'
 type FlowControl = 'none' | 'hardware'
@@ -269,8 +270,20 @@ app.innerHTML = `
         <section class="flashFilesCard card">
           <div class="flashFilesHeader">
             <h3>Firmware files</h3>
+            <div class="flashFilesActions">
+              <label
+                class="primary mini flashZipLabel"
+                for="flashZipInput"
+                title="Load a CI artifact zip containing bootloader.bin, partition-table.bin, ota_data_initial.bin, mmwave_radar2_idf.bin"
+              >📦 Load firmware .zip</label>
+              <input id="flashZipInput" type="file" accept=".zip,application/zip,application/x-zip-compressed" hidden />
+              <button id="flashClearZipBtn" class="ghost mini" type="button" disabled>Clear</button>
+            </div>
           </div>
-          <div id="flashSlotList" class="flashSlotList"></div>
+          <p id="flashZipStatus" class="flashZipStatus" aria-live="polite">
+            Load a <code>.zip</code> from your CI build (e.g. <code>gm_radar-wifi-1.zip</code>).
+            Addresses are hardcoded — only the four <code>.bin</code> files are extracted.
+          </p>
         </section>
 
         <section class="flashActionsCard card">
@@ -740,7 +753,9 @@ const flashViewEl = document.querySelector<HTMLElement>('#flashView')
 const flashBaudEl = document.querySelector<HTMLSelectElement>('#flashBaud')
 const flashEraseAllEl = document.querySelector<HTMLInputElement>('#flashEraseAll')
 const flashCompressEl = document.querySelector<HTMLInputElement>('#flashCompress')
-const flashSlotListEl = document.querySelector<HTMLElement>('#flashSlotList')
+const flashZipInputEl = document.querySelector<HTMLInputElement>('#flashZipInput')
+const flashClearZipBtn = document.querySelector<HTMLButtonElement>('#flashClearZipBtn')
+const flashZipStatusEl = document.querySelector<HTMLElement>('#flashZipStatus')
 const flashConnectBtn = document.querySelector<HTMLButtonElement>('#flashConnectBtn')
 const flashDisconnectBtn = document.querySelector<HTMLButtonElement>('#flashDisconnectBtn')
 const flashDetectBtn = document.querySelector<HTMLButtonElement>('#flashDetectBtn')
@@ -832,7 +847,9 @@ if (
   !flashBaudEl ||
   !flashEraseAllEl ||
   !flashCompressEl ||
-  !flashSlotListEl ||
+  !flashZipInputEl ||
+  !flashClearZipBtn ||
+  !flashZipStatusEl ||
   !flashConnectBtn ||
   !flashDisconnectBtn ||
   !flashDetectBtn ||
@@ -3455,43 +3472,6 @@ let flashIsBusy = false
 type AppTab = 'terminal' | 'flash' | 'config'
 let activeAppTab: AppTab = 'terminal'
 
-const renderFlashSlots = () => {
-  flashSlotListEl.innerHTML = flashSlots
-    .map((slot) => {
-      const hasFile = slot.file !== null
-      const fileName = slot.file ? escapeHtml(slot.file.name) : 'No file selected'
-      const fileSize = slot.file ? formatFlashFileSize(slot.file.size) : ''
-      const addressHex = formatFlashAddress(slot.address)
-      return `
-        <div class="flashSlot ${hasFile ? 'isReady' : ''}" data-slot-id="${slot.id}">
-          <div class="flashSlotAddressBadge" title="Flash address">
-            <span class="flashSlotAddressLabel">addr</span>
-            <span class="flashSlotAddressValue">${addressHex}</span>
-          </div>
-          <div class="flashSlotMain">
-            <p class="flashSlotLabel">
-              ${escapeHtml(slot.label)}
-              <span class="flashSlotFilename">${escapeHtml(slot.filename)}</span>
-            </p>
-            <p class="flashSlotFile ${hasFile ? '' : 'flashSlotFileEmpty'}">
-              <span class="flashSlotFileName">${fileName}</span>
-              ${fileSize ? `<span class="flashSlotFileSize">${escapeHtml(fileSize)}</span>` : ''}
-            </p>
-          </div>
-          <div class="flashSlotActions">
-            <button class="ghost mini" data-flash-action="pick-file" data-slot-id="${slot.id}" type="button">
-              ${hasFile ? 'Replace' : 'Choose .bin'}
-            </button>
-            ${hasFile
-              ? `<button class="ghost mini" data-flash-action="clear-file" data-slot-id="${slot.id}" type="button" title="Remove file">✕</button>`
-              : ''}
-          </div>
-        </div>
-      `
-    })
-    .join('')
-}
-
 const refreshFlashControls = () => {
   const hasPort = flashSession.port !== null
   const hasLoader = flashSession.loader !== null
@@ -3512,6 +3492,17 @@ const refreshFlashControls = () => {
   flashBaudEl.disabled = flashIsBusy || hasLoader
   flashEraseAllEl.disabled = flashIsBusy
   flashCompressEl.disabled = flashIsBusy
+
+  // While a zip is being parsed, ban Flash (slots may be transient) and
+  // block re-entering the picker; the file <input> is also guarded by the
+  // flashZipLoadInProgress flag in the change handler.
+  if (flashZipLoadInProgress) {
+    flashStartBtn.disabled = true
+    flashStartBtn.textContent = 'Parsing zip…'
+  }
+  flashZipInputEl.disabled = flashIsBusy || flashZipLoadInProgress
+  flashClearZipBtn.disabled =
+    flashIsBusy || flashZipLoadInProgress || missingCount === flashSlots.length
 }
 
 const setFlashStatusMessage = (message: string) => {
@@ -3749,34 +3740,156 @@ const flashStart = async () => {
   }
 }
 
-const openFilePickerForSlot = (slotId: string) => {
-  const slot = flashSlots.find((item) => item.id === slotId)
-  if (!slot) {
-    return
+const setFlashZipStatus = (
+  html: string,
+  state: 'idle' | 'ok' | 'partial' | 'error',
+): void => {
+  flashZipStatusEl.innerHTML = html
+  flashZipStatusEl.classList.remove('isOk', 'isPartial', 'isError')
+  if (state === 'ok') {
+    flashZipStatusEl.classList.add('isOk')
+  } else if (state === 'partial') {
+    flashZipStatusEl.classList.add('isPartial')
+  } else if (state === 'error') {
+    flashZipStatusEl.classList.add('isError')
   }
-  const input = document.createElement('input')
-  input.type = 'file'
-  input.accept = '.bin,.hex'
-  input.addEventListener('change', () => {
-    const file = input.files?.[0]
-    if (!file) {
-      return
-    }
-    slot.file = file
-    renderFlashSlots()
-    refreshFlashControls()
-  })
-  input.click()
 }
 
-const clearSlotFile = (slotId: string) => {
-  const slot = flashSlots.find((item) => item.id === slotId)
-  if (!slot) {
+let flashZipLoadInProgress = false
+
+const clearAllSlotFiles = (): void => {
+  for (const slot of flashSlots) {
+    slot.file = null
+  }
+  refreshFlashControls()
+  flashClearZipBtn.disabled = true
+}
+
+const loadFirmwareZip = async (zip: File): Promise<void> => {
+  // Ignore concurrent picks while a previous parse is still running. The user
+  // would otherwise be able to overwrite the in-flight load's result with a
+  // racing one — and during the race the Flash button would still expose the
+  // stale slot files from a previous successful load.
+  if (flashZipLoadInProgress) {
+    appendFlashLog(
+      `Ignored "${zip.name}" — another firmware zip is still being parsed.`,
+    )
     return
   }
-  slot.file = null
-  renderFlashSlots()
+  flashZipLoadInProgress = true
+
+  // Immediately clear stale slot files so the Flash button is disabled until
+  // the new parse finishes. Without this, the user could click Flash while we
+  // were still parsing the new zip and end up flashing the *previous* artifact.
+  for (const slot of flashSlots) {
+    slot.file = null
+  }
   refreshFlashControls()
+  flashClearZipBtn.disabled = true
+
+  appendFlashLog(`Loading firmware zip: ${zip.name} (${formatFlashFileSize(zip.size)})...`)
+  setFlashZipStatus(`Parsing <code>${escapeHtml(zip.name)}</code>...`, 'idle')
+  try {
+    const expectedBasenames = new Map<number, string>(
+      flashSlots.map((slot) => [slot.address, slot.filename] as const),
+    )
+    // Only the app slot is allowed to use the "single leftover .bin" fallback;
+    // see ExtractFirmwareZipOptions.leftoverFallback. Bootloader / partition
+    // table / OTA-data slots always require an exact name match (or a manifest)
+    // — flashing a random .bin to 0x0 could brick the device.
+    const appSlot = flashSlots.find((slot) => slot.id === 'app')
+    const summary = await extractFirmwareZip(zip, expectedBasenames, {
+      leftoverFallback: appSlot ? { address: appSlot.address } : undefined,
+    })
+
+    // Hydrate slots by address. Missing addresses leave their slot empty.
+    for (const slot of flashSlots) {
+      const matched = summary.filesByAddress.get(slot.address)
+      slot.file = matched ?? null
+    }
+    refreshFlashControls()
+    flashClearZipBtn.disabled = false
+
+    const matchedDescr = summary.matchedAddresses
+      .map((addr) => formatFlashAddress(addr))
+      .join(', ')
+    const slotForAddress = (addr: number) => flashSlots.find((s) => s.address === addr)
+    const missingDescrItems = summary.missingAddresses.map((addr) => {
+      const slot = slotForAddress(addr)
+      const expected = slot ? slot.filename : ''
+      return `${formatFlashAddress(addr)}${expected ? ` (${expected})` : ''}`
+    })
+    const missingDescr = missingDescrItems.join(', ')
+
+    if (summary.missingAddresses.length === 0) {
+      const source = summary.usedManifest ? 'flasher_args.json manifest' : 'filename match'
+      setFlashZipStatus(
+        `<strong>${escapeHtml(zip.name)}</strong> loaded via ${source} — all 4 files matched (${matchedDescr}).`,
+        'ok',
+      )
+      appendFlashLog(`Zip loaded: matched all 4 slots via ${source}.`)
+      if (summary.manifestParams) {
+        const { mode, size, freq, chip } = summary.manifestParams
+        appendFlashLog(
+          `Manifest flash params: chip=${chip ?? '?'} mode=${mode ?? '?'} size=${size ?? '?'} freq=${freq ?? '?'} (UI keeps esp32s3 / dio / 8MB / 80m).`,
+        )
+      }
+    } else if (summary.matchedAddresses.length === 0) {
+      // Totally wrong zip — none of the expected files were inside.
+      const binList = summary.binFilesInZip
+        .map((entry) => `<code>${escapeHtml(entry.path)}</code>`)
+        .join(', ')
+      setFlashZipStatus(
+        `<strong>${escapeHtml(zip.name)}</strong> contains none of the expected firmware files. ` +
+          `Expected: <code>bootloader.bin</code>, <code>partition-table.bin</code>, ` +
+          `<code>ota_data_initial.bin</code>, <code>mmwave_radar2_idf.bin</code>. ` +
+          (binList ? `Found in zip: ${binList}.` : 'No .bin files were found inside the zip.'),
+        'error',
+      )
+      appendFlashLog(
+        `Zip rejected: none of the expected addresses matched. ` +
+          (summary.binFilesInZip.length
+            ? `.bin files in zip: ${summary.binFilesInZip.map((e) => e.path).join(', ')}`
+            : 'no .bin files in zip.'),
+      )
+    } else {
+      // Partial match — some files found, some missing.
+      const binList = summary.binFilesInZip
+        .map((entry) => `<code>${escapeHtml(entry.path)}</code>`)
+        .join(', ')
+      setFlashZipStatus(
+        `<strong>${escapeHtml(zip.name)}</strong> partially loaded — missing: ${escapeHtml(missingDescr)}. ` +
+          (binList
+            ? `Files seen in zip: ${binList}. ` +
+              'Re-zip with all four binaries (or include <code>flasher_args.json</code>).'
+            : 'Re-zip with bootloader.bin, partition-table.bin, ota_data_initial.bin, mmwave_radar2_idf.bin.'),
+        'partial',
+      )
+      appendFlashLog(
+        `Zip warning: missing files for ${missingDescr}. Matched: ${matchedDescr || 'none'}.`,
+      )
+      if (summary.binFilesInZip.length) {
+        appendFlashLog(
+          `.bin files seen in zip: ${summary.binFilesInZip.map((e) => `${e.path} (${formatFlashFileSize(e.size)})`).join(', ')}`,
+        )
+      }
+    }
+
+    for (const warning of summary.warnings) {
+      appendFlashLog(`[zip] ${warning}`)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'failed to read zip'
+    appendFlashLog(`Failed to load zip: ${message}`)
+    setFlashZipStatus(
+      `<strong>Failed to load ${escapeHtml(zip.name)}:</strong> ${escapeHtml(message)}`,
+      'error',
+    )
+    clearAllSlotFiles()
+  } finally {
+    flashZipLoadInProgress = false
+    refreshFlashControls()
+  }
 }
 
 const setActiveAppTab = (tab: AppTab) => {
@@ -3819,24 +3932,27 @@ configTabBtn.addEventListener('click', () => {
   setActiveAppTab('config')
 })
 
-flashSlotListEl.addEventListener('click', (event) => {
-  const target = event.target as HTMLElement
-  const actionButton = target.closest<HTMLButtonElement>('button[data-flash-action]')
-  if (!actionButton) {
+flashZipInputEl.addEventListener('change', () => {
+  const file = flashZipInputEl.files?.[0]
+  if (!file) {
     return
   }
-  const action = actionButton.getAttribute('data-flash-action')
-  const slotId = actionButton.getAttribute('data-slot-id')
-  if (!action || !slotId) {
+  void loadFirmwareZip(file)
+  // Reset so the same file can be re-picked after a Clear.
+  flashZipInputEl.value = ''
+})
+
+flashClearZipBtn.addEventListener('click', () => {
+  if (flashIsBusy) {
     return
   }
-  if (action === 'pick-file') {
-    openFilePickerForSlot(slotId)
-    return
-  }
-  if (action === 'clear-file') {
-    clearSlotFile(slotId)
-  }
+  clearAllSlotFiles()
+  setFlashZipStatus(
+    'Load a <code>.zip</code> from your CI build (e.g. <code>gm_radar-wifi-1.zip</code>). ' +
+      'Addresses are hardcoded — only the four <code>.bin</code> files are extracted.',
+    'idle',
+  )
+  appendFlashLog('Cleared firmware slots.')
 })
 
 flashConnectBtn.addEventListener('click', () => {
@@ -4267,7 +4383,6 @@ const initialize = () => {
     firstPane.statusMessage = 'Web Serial unsupported. Use Chrome or Edge on desktop.'
   }
 
-  renderFlashSlots()
   flashControlsReady = true
   refreshFlashControls()
   showFlashChipInfo(null)
