@@ -494,6 +494,143 @@ body {
   word-break: break-word;
 }
 
+/* ---------- Config tab ---------- */
+
+.configLayout {
+  gap: 0.85rem;
+}
+
+.configHeader {
+  gap: 0.55rem;
+}
+
+.configBootHint {
+  background: rgba(82, 153, 255, 0.08);
+  border: 1px solid rgba(82, 153, 255, 0.32);
+  color: #2a4a8c;
+}
+
+.configFilesCard {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.85rem 1rem;
+}
+
+.configFilesCard .flashFilesHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.configFilesCard .flashFilesActions {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.configFileLabel {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.32rem 0.65rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.configFileLabel:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.configFilenameRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.configFilenameControl {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+}
+
+.configFilenameInput {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.78rem;
+  background: #fff;
+}
+
+.configJsonStatus {
+  font-size: 0.76rem;
+  color: #6b7280;
+  margin-left: auto;
+  align-self: center;
+}
+
+.configJsonStatus.isOk {
+  color: #1f8a3e;
+}
+
+.configJsonStatus.isError {
+  color: #c0392b;
+}
+
+.configJsonEditor {
+  width: 100%;
+  min-height: 13rem;
+  max-height: 28rem;
+  resize: vertical;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  padding: 0.7rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: #050b14;
+  color: #d6f5e3;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+
+.configJsonEditor:focus {
+  outline: 2px solid rgba(82, 153, 255, 0.55);
+  outline-offset: 1px;
+}
+
+.configActionsCard .flashActionsRow {
+  flex-wrap: wrap;
+}
+
+.configApplyBtn {
+  min-width: 12rem;
+}
+
+.configPortInfo {
+  font-size: 0.78rem;
+}
+
+.configStatus.isBusy {
+  border-color: rgba(82, 153, 255, 0.5);
+  background: rgba(82, 153, 255, 0.08);
+}
+
+.configFilenameControl {
+  align-items: center;
+}
+
+.configFilenameControl > span {
+  min-width: 4.2rem;
+}
+
+.configConsoleCard {
+  padding: 0.85rem 1rem;
+}
+
 .socialDock {
   position: fixed;
   top: 0.78rem;

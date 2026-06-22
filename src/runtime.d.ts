@@ -8,6 +8,11 @@ declare global {
     }
   }
 
+  interface SerialPortInfo {
+    usbVendorId?: number
+    usbProductId?: number
+  }
+
   interface SerialPort {
     open: (options: {
       baudRate: number
@@ -18,6 +23,12 @@ declare global {
       flowControl?: FlowControl
     }) => Promise<void>
     close: () => Promise<void>
+    setSignals?: (signals: {
+      dataTerminalReady?: boolean
+      requestToSend?: boolean
+      break?: boolean
+    }) => Promise<void>
+    getInfo?: () => SerialPortInfo
     readable: ReadableStream<Uint8Array> | null
     writable: WritableStream<Uint8Array> | null
   }

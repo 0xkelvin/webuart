@@ -23,6 +23,16 @@ import {
   type FlashSession,
   type FlashTerminal,
 } from './flashService'
+import {
+  applyConfig as runApplyConfig,
+  closePortSafely as closeConfigPort,
+  parseJsonConfig,
+  requestConfigPort,
+  type ApplyConfigProgress,
+  type ConfigLogger,
+  type EndCommand,
+  type ResetMode,
+} from './configService'
 
 type Parity = 'none' | 'even' | 'odd'
 type FlowControl = 'none' | 'hardware'
@@ -180,6 +190,18 @@ app.innerHTML = `
         <span class="appTabIcon" aria-hidden="true">⚡</span>
         <span class="appTabLabel">Flash</span>
       </button>
+      <button
+        id="configTabBtn"
+        class="appTab"
+        type="button"
+        role="tab"
+        aria-selected="false"
+        aria-controls="configView"
+        data-tab="config"
+      >
+        <span class="appTabIcon" aria-hidden="true">⚙</span>
+        <span class="appTabLabel">Config</span>
+      </button>
     </nav>
 
     <section id="firstOpenTip" class="tip card hidden" aria-hidden="true">
@@ -279,6 +301,122 @@ app.innerHTML = `
             </div>
           </div>
           <pre id="flashConsoleOutput" class="flashConsoleOutput" aria-live="polite"></pre>
+        </section>
+      </div>
+    </section>
+
+    <section
+      id="configView"
+      class="tabPanel configView hidden"
+      role="tabpanel"
+      aria-labelledby="configTabBtn"
+      aria-hidden="true"
+    >
+      <div class="flashLayout configLayout">
+        <header class="flashHeader configHeader card">
+          <div class="flashHeaderRow">
+            <h2 class="flashTitle">⚙ Device Configuration</h2>
+            <div class="flashHeaderMeta">
+              <label class="flashInlineField">
+                <span>Baud</span>
+                <select id="configBaudSelect"></select>
+              </label>
+              <label class="flashInlineField" title="How the device is reset before entering AT mode.">
+                <span>Reset</span>
+                <select id="configResetSelect">
+                  <option value="rts_dtr" selected>RTS+DTR</option>
+                  <option value="dtr">DTR only</option>
+                  <option value="usb_jtag">USB-JTAG (S3)</option>
+                  <option value="none">Manual</option>
+                </select>
+              </label>
+              <label class="flashInlineField" title="Final AT command after all keys are written.">
+                <span>After</span>
+                <select id="configEndSelect">
+                  <option value="cont" selected>AT+CONT</option>
+                  <option value="rst">AT+RST=</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <p class="flashHelp">
+            Send a JSON config to a running ESP32-S3 firmware over UART. Mirrors
+            <code>configure_device.py</code> (AT-mode protocol, 115200 baud).
+          </p>
+          <p class="flashBootHint configBootHint">
+            <strong>Tip:</strong> the board must be running normal firmware (not the bootloader),
+            and no Terminal pane may hold the same port.
+          </p>
+        </header>
+
+        <section class="flashFilesCard configFilesCard card">
+          <div class="flashFilesHeader">
+            <h3>Config JSON</h3>
+            <div class="flashFilesActions">
+              <label class="ghost mini configFileLabel" for="configFileInput">Load JSON file</label>
+              <input id="configFileInput" type="file" accept="application/json,.json" hidden />
+              <button id="configClearJsonBtn" class="ghost mini" type="button">Clear</button>
+            </div>
+          </div>
+          <div class="configFilenameRow">
+            <label class="flashInlineField configFilenameControl">
+              <span>CFGFILE</span>
+              <input
+                id="configFilenameInput"
+                class="configFilenameInput"
+                type="text"
+                placeholder="config_vitalSign_office.json"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </label>
+            <span id="configJsonStatus" class="configJsonStatus" aria-live="polite"></span>
+          </div>
+          <textarea
+            id="configJsonEditor"
+            class="configJsonEditor"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder='{
+  "WIFISSID": "MyWifi",
+  "WIFIPWD": "secret",
+  "MQTTADD": "143.198.199.16",
+  "MQTTPRT": 1883,
+  ...
+}'
+          ></textarea>
+        </section>
+
+        <section class="flashActionsCard configActionsCard card">
+          <div class="flashActionsRow">
+            <button id="configConnectBtn" class="primary" type="button">Connect</button>
+            <button id="configDisconnectBtn" class="ghost" type="button" disabled>Disconnect</button>
+            <button id="configApplyBtn" class="primary configApplyBtn" type="button" disabled>
+              ⚙ Apply configuration
+            </button>
+            <button id="configCancelBtn" class="ghost" type="button" hidden>Cancel</button>
+          </div>
+          <div id="configPortInfo" class="flashChipInfo configPortInfo hidden" aria-live="polite"></div>
+          <div id="configStatus" class="flashProgress configStatus hidden" aria-live="polite">
+            <div class="flashProgressLabel">
+              <span id="configStatusMessage">Idle</span>
+              <span id="configStatusPercent">0%</span>
+            </div>
+            <div class="flashProgressBar">
+              <div id="configStatusFill" class="flashProgressFill" style="width: 0%"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="flashConsoleCard configConsoleCard card">
+          <div class="flashConsoleHeader">
+            <h3>Console</h3>
+            <div class="flashConsoleActions">
+              <button id="configCopyLogBtn" class="ghost mini" type="button">Copy</button>
+              <button id="configClearLogBtn" class="ghost mini" type="button">Clear</button>
+            </div>
+          </div>
+          <pre id="configConsoleOutput" class="flashConsoleOutput" aria-live="polite"></pre>
         </section>
       </div>
     </section>
@@ -616,6 +754,28 @@ const flashConsoleOutputEl = document.querySelector<HTMLElement>('#flashConsoleO
 const flashCopyLogBtn = document.querySelector<HTMLButtonElement>('#flashCopyLogBtn')
 const flashClearLogBtn = document.querySelector<HTMLButtonElement>('#flashClearLogBtn')
 const flashStatusEl = document.querySelector<HTMLElement>('#flashStatus')
+const configTabBtn = document.querySelector<HTMLButtonElement>('#configTabBtn')
+const configViewEl = document.querySelector<HTMLElement>('#configView')
+const configBaudSelect = document.querySelector<HTMLSelectElement>('#configBaudSelect')
+const configResetSelect = document.querySelector<HTMLSelectElement>('#configResetSelect')
+const configEndSelect = document.querySelector<HTMLSelectElement>('#configEndSelect')
+const configFileInput = document.querySelector<HTMLInputElement>('#configFileInput')
+const configClearJsonBtn = document.querySelector<HTMLButtonElement>('#configClearJsonBtn')
+const configFilenameInput = document.querySelector<HTMLInputElement>('#configFilenameInput')
+const configJsonEditor = document.querySelector<HTMLTextAreaElement>('#configJsonEditor')
+const configJsonStatusEl = document.querySelector<HTMLElement>('#configJsonStatus')
+const configConnectBtn = document.querySelector<HTMLButtonElement>('#configConnectBtn')
+const configDisconnectBtn = document.querySelector<HTMLButtonElement>('#configDisconnectBtn')
+const configApplyBtn = document.querySelector<HTMLButtonElement>('#configApplyBtn')
+const configCancelBtn = document.querySelector<HTMLButtonElement>('#configCancelBtn')
+const configPortInfoEl = document.querySelector<HTMLElement>('#configPortInfo')
+const configStatusEl = document.querySelector<HTMLElement>('#configStatus')
+const configStatusMessageEl = document.querySelector<HTMLElement>('#configStatusMessage')
+const configStatusPercentEl = document.querySelector<HTMLElement>('#configStatusPercent')
+const configStatusFillEl = document.querySelector<HTMLElement>('#configStatusFill')
+const configConsoleOutputEl = document.querySelector<HTMLElement>('#configConsoleOutput')
+const configCopyLogBtn = document.querySelector<HTMLButtonElement>('#configCopyLogBtn')
+const configClearLogBtn = document.querySelector<HTMLButtonElement>('#configClearLogBtn')
 const paneMenuEl = document.querySelector<HTMLDivElement>('#paneMenu')
 const quickCommandMenuEl = document.querySelector<HTMLDivElement>('#quickCommandMenu')
 const timerCommandMenuEl = document.querySelector<HTMLDivElement>('#timerCommandMenu')
@@ -686,6 +846,28 @@ if (
   !flashCopyLogBtn ||
   !flashClearLogBtn ||
   !flashStatusEl ||
+  !configTabBtn ||
+  !configViewEl ||
+  !configBaudSelect ||
+  !configResetSelect ||
+  !configEndSelect ||
+  !configFileInput ||
+  !configClearJsonBtn ||
+  !configFilenameInput ||
+  !configJsonEditor ||
+  !configJsonStatusEl ||
+  !configConnectBtn ||
+  !configDisconnectBtn ||
+  !configApplyBtn ||
+  !configCancelBtn ||
+  !configPortInfoEl ||
+  !configStatusEl ||
+  !configStatusMessageEl ||
+  !configStatusPercentEl ||
+  !configStatusFillEl ||
+  !configConsoleOutputEl ||
+  !configCopyLogBtn ||
+  !configClearLogBtn ||
   !paneMenuEl ||
   !quickCommandMenuEl ||
   !timerCommandMenuEl ||
@@ -735,6 +917,11 @@ let flashControlsReady = false
 const refreshFlashControlsIfReady = () => {
   if (flashControlsReady) {
     refreshFlashControls()
+  }
+  // Config tab also needs to know when a terminal pane connects/disconnects,
+  // because it shares the serial port lock with Terminal/Flash.
+  if (configControlsReady) {
+    refreshConfigControls()
   }
 }
 
@@ -3265,7 +3452,8 @@ const flashSession: FlashSession = createFlashSession()
 const flashSlots: FlashSlot[] = createFlashSlots()
 let flashConsoleLines: string[] = []
 let flashIsBusy = false
-let activeAppTab: 'terminal' | 'flash' = 'terminal'
+type AppTab = 'terminal' | 'flash' | 'config'
+let activeAppTab: AppTab = 'terminal'
 
 const renderFlashSlots = () => {
   flashSlotListEl.innerHTML = flashSlots
@@ -3591,31 +3779,44 @@ const clearSlotFile = (slotId: string) => {
   refreshFlashControls()
 }
 
-const flashSetActiveTab = (tab: 'terminal' | 'flash') => {
+const setActiveAppTab = (tab: AppTab) => {
   if (activeAppTab === tab) {
     return
   }
   activeAppTab = tab
   const isTerminal = tab === 'terminal'
+  const isFlash = tab === 'flash'
+  const isConfig = tab === 'config'
   terminalTabBtn.classList.toggle('active', isTerminal)
   terminalTabBtn.setAttribute('aria-selected', String(isTerminal))
-  flashTabBtn.classList.toggle('active', !isTerminal)
-  flashTabBtn.setAttribute('aria-selected', String(!isTerminal))
+  flashTabBtn.classList.toggle('active', isFlash)
+  flashTabBtn.setAttribute('aria-selected', String(isFlash))
+  configTabBtn.classList.toggle('active', isConfig)
+  configTabBtn.setAttribute('aria-selected', String(isConfig))
   terminalViewEl.classList.toggle('hidden', !isTerminal)
   terminalViewEl.setAttribute('aria-hidden', String(!isTerminal))
-  flashViewEl.classList.toggle('hidden', isTerminal)
-  flashViewEl.setAttribute('aria-hidden', String(isTerminal))
-  if (!isTerminal) {
+  flashViewEl.classList.toggle('hidden', !isFlash)
+  flashViewEl.setAttribute('aria-hidden', String(!isFlash))
+  configViewEl.classList.toggle('hidden', !isConfig)
+  configViewEl.setAttribute('aria-hidden', String(!isConfig))
+  if (isFlash) {
     refreshFlashControls()
+  }
+  if (isConfig) {
+    refreshConfigControls()
   }
 }
 
 terminalTabBtn.addEventListener('click', () => {
-  flashSetActiveTab('terminal')
+  setActiveAppTab('terminal')
 })
 
 flashTabBtn.addEventListener('click', () => {
-  flashSetActiveTab('flash')
+  setActiveAppTab('flash')
+})
+
+configTabBtn.addEventListener('click', () => {
+  setActiveAppTab('config')
 })
 
 flashSlotListEl.addEventListener('click', (event) => {
@@ -3669,6 +3870,383 @@ flashClearLogBtn.addEventListener('click', () => {
   flashConsoleOutputEl.textContent = ''
 })
 
+// ============================================================================
+// Config tab: apply AT-mode JSON configuration over Web Serial
+// ============================================================================
+
+type ConfigSession = {
+  port: SerialPort | null
+  isApplying: boolean
+  shouldCancel: boolean
+}
+
+const configSession: ConfigSession = {
+  port: null,
+  isApplying: false,
+  shouldCancel: false,
+}
+
+let configConsoleLines: string[] = []
+let configJsonValid = false
+let configControlsReady = false
+
+const populateConfigBaudSelect = () => {
+  configBaudSelect.innerHTML = ''
+  for (const rate of flashBaudRates) {
+    const option = document.createElement('option')
+    option.value = String(rate)
+    option.textContent = rate.toLocaleString()
+    // AT mode uses 115200 by default per configure_device.py.
+    if (rate === 115200) {
+      option.selected = true
+    }
+    configBaudSelect.appendChild(option)
+  }
+}
+
+const appendConfigLog = (line: string) => {
+  configConsoleLines.push(line)
+  if (configConsoleLines.length > 4000) {
+    configConsoleLines = configConsoleLines.slice(-3000)
+  }
+  configConsoleOutputEl.textContent = configConsoleLines.join('\n')
+  configConsoleOutputEl.scrollTop = configConsoleOutputEl.scrollHeight
+}
+
+const writeConfigLogPartial = (chunk: string) => {
+  if (configConsoleLines.length === 0) {
+    configConsoleLines.push('')
+  }
+  const pieces = chunk.split(/\r?\n/)
+  configConsoleLines[configConsoleLines.length - 1] += pieces[0]
+  for (let i = 1; i < pieces.length; i += 1) {
+    configConsoleLines.push(pieces[i])
+  }
+  if (configConsoleLines.length > 4000) {
+    configConsoleLines = configConsoleLines.slice(-3000)
+  }
+  configConsoleOutputEl.textContent = configConsoleLines.join('\n')
+  configConsoleOutputEl.scrollTop = configConsoleOutputEl.scrollHeight
+}
+
+const setConfigStatus = (
+  state: 'idle' | 'busy' | 'success' | 'error',
+  message?: string,
+): void => {
+  configStatusEl.classList.remove('hidden')
+  configStatusEl.classList.toggle('isSuccess', state === 'success')
+  configStatusEl.classList.toggle('isError', state === 'error')
+  configStatusEl.classList.toggle('isBusy', state === 'busy')
+  configStatusMessageEl.textContent = message ?? (state === 'idle' ? 'Idle' : state)
+}
+
+const setConfigProgressPercent = (percent: number): void => {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)))
+  configStatusFillEl.style.width = `${clamped}%`
+  configStatusPercentEl.textContent = `${clamped}%`
+}
+
+const updateConfigProgress = (progress: ApplyConfigProgress): void => {
+  const percent = progress.total > 0 ? (progress.step / progress.total) * 100 : 0
+  setConfigProgressPercent(percent)
+  const phaseLabel =
+    progress.phase === 'boot'
+      ? 'Waiting for AT mode'
+      : progress.phase === 'write'
+        ? `Writing ${progress.label}`
+        : progress.phase === 'finalize'
+          ? progress.label
+          : 'Done'
+  configStatusMessageEl.textContent = `${phaseLabel} (${progress.step}/${progress.total})`
+}
+
+const showConfigPortInfo = (text: string | null): void => {
+  if (!text) {
+    configPortInfoEl.classList.add('hidden')
+    configPortInfoEl.textContent = ''
+    return
+  }
+  configPortInfoEl.classList.remove('hidden')
+  configPortInfoEl.textContent = text
+}
+
+const validateConfigJson = (): boolean => {
+  const text = configJsonEditor.value.trim()
+  if (!text) {
+    configJsonStatusEl.textContent = ''
+    configJsonStatusEl.classList.remove('isError', 'isOk')
+    configJsonValid = false
+    return false
+  }
+  const result = parseJsonConfig(text)
+  if (!result.ok) {
+    configJsonStatusEl.textContent = `Invalid JSON: ${result.error}`
+    configJsonStatusEl.classList.add('isError')
+    configJsonStatusEl.classList.remove('isOk')
+    configJsonValid = false
+    return false
+  }
+  const keyCount = Object.keys(result.value).length
+  configJsonStatusEl.textContent = `Valid JSON • ${keyCount} key${keyCount === 1 ? '' : 's'}`
+  configJsonStatusEl.classList.remove('isError')
+  configJsonStatusEl.classList.add('isOk')
+  configJsonValid = true
+  return true
+}
+
+const refreshConfigControls = (): void => {
+  const hasPort = configSession.port !== null
+  const isBusy = configSession.isApplying
+  const anyTerminalConnected = Array.from(panes.values()).some((pane) => pane.isConnected)
+
+  configConnectBtn.disabled = isBusy || hasPort || anyTerminalConnected
+  configConnectBtn.textContent = anyTerminalConnected
+    ? 'Disconnect terminal first'
+    : hasPort
+      ? 'Connected'
+      : 'Connect'
+  configDisconnectBtn.disabled = isBusy || !hasPort
+  configApplyBtn.disabled = isBusy || !hasPort || !configJsonValid
+  configCancelBtn.hidden = !isBusy
+  configCancelBtn.disabled = !isBusy || configSession.shouldCancel
+
+  configBaudSelect.disabled = isBusy || hasPort
+  configResetSelect.disabled = isBusy
+  configEndSelect.disabled = isBusy
+  configFileInput.disabled = isBusy
+  configClearJsonBtn.disabled = isBusy
+  configFilenameInput.disabled = isBusy
+  configJsonEditor.disabled = isBusy
+}
+
+const configConnect = async (): Promise<void> => {
+  if (configSession.port !== null) {
+    return
+  }
+  if (!navigator.serial) {
+    appendConfigLog('Web Serial unavailable in this browser.')
+    setConfigStatus('error', 'Web Serial unavailable')
+    return
+  }
+  try {
+    setConfigStatus('busy', 'Requesting serial port...')
+    appendConfigLog('Requesting serial port...')
+    const port = await requestConfigPort()
+    configSession.port = port
+    const info = port.getInfo?.() ?? {}
+    const vid =
+      typeof info.usbVendorId === 'number'
+        ? `VID 0x${info.usbVendorId.toString(16).padStart(4, '0')}`
+        : null
+    const pid =
+      typeof info.usbProductId === 'number'
+        ? `PID 0x${info.usbProductId.toString(16).padStart(4, '0')}`
+        : null
+    const portLabel = [vid, pid].filter(Boolean).join(' · ') || 'Serial port'
+    showConfigPortInfo(`Port ready · ${portLabel}`)
+    appendConfigLog(`Port acquired (${portLabel}). Ready to apply configuration.`)
+    setConfigStatus('idle', 'Port ready')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to request port'
+    if (/no port selected/i.test(message)) {
+      appendConfigLog('Port selection cancelled by user.')
+      setConfigStatus('idle', 'Cancelled')
+    } else {
+      appendConfigLog(`Connect failed: ${message}`)
+      setConfigStatus('error', message)
+    }
+  } finally {
+    refreshConfigControls()
+  }
+}
+
+const configDisconnect = async (): Promise<void> => {
+  if (configSession.port === null) {
+    return
+  }
+  if (configSession.isApplying) {
+    appendConfigLog('Cannot disconnect while Apply is in progress. Use Cancel first.')
+    return
+  }
+  const port = configSession.port
+  configSession.port = null
+  try {
+    await closeConfigPort(port)
+    appendConfigLog('Port released.')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'close failed'
+    appendConfigLog(`Disconnect warning: ${message}`)
+  }
+  showConfigPortInfo(null)
+  setConfigStatus('idle')
+  refreshConfigControls()
+}
+
+const configApply = async (): Promise<void> => {
+  if (!configSession.port || configSession.isApplying) {
+    return
+  }
+  if (!validateConfigJson()) {
+    appendConfigLog('Cannot apply: JSON is invalid or empty.')
+    return
+  }
+  const parsed = parseJsonConfig(configJsonEditor.value)
+  if (!parsed.ok) {
+    appendConfigLog(`Cannot apply: ${parsed.error}`)
+    return
+  }
+
+  const cfgFilename =
+    configFilenameInput.value.trim() ||
+    (parsed.value.CFGFILE && typeof parsed.value.CFGFILE === 'string'
+      ? parsed.value.CFGFILE
+      : 'config.json')
+
+  const resetMode = configResetSelect.value as ResetMode
+  const endCommand = configEndSelect.value as EndCommand
+  const baudRate = Number(configBaudSelect.value) || 115200
+
+  configSession.isApplying = true
+  configSession.shouldCancel = false
+  refreshConfigControls()
+  setConfigStatus('busy', 'Waiting for AT mode...')
+  setConfigProgressPercent(0)
+
+  appendConfigLog(`${'='.repeat(60)}`)
+  appendConfigLog('ESP32 AT Config Tool')
+  appendConfigLog(`  Config file : ${cfgFilename}`)
+  appendConfigLog(`  Baud rate   : ${baudRate}`)
+  appendConfigLog(`  Reset mode  : ${resetMode}`)
+  appendConfigLog(`  End command : AT+${endCommand === 'cont' ? 'CONT' : 'RST='}`)
+  appendConfigLog(`${'='.repeat(60)}`)
+
+  const logger: ConfigLogger = {
+    onDeviceData: writeConfigLogPartial,
+    onStatus: (line) => appendConfigLog(line),
+    onWarn: (line) => appendConfigLog(`[WARN] ${line}`),
+    onError: (line) => appendConfigLog(`[ERROR] ${line}`),
+  }
+
+  try {
+    const ok = await runApplyConfig({
+      port: configSession.port,
+      config: parsed.value,
+      configFilename: cfgFilename,
+      resetMode,
+      endCommand,
+      baudRate,
+      logger,
+      shouldCancel: () => configSession.shouldCancel,
+      onProgress: updateConfigProgress,
+    })
+    if (ok) {
+      setConfigProgressPercent(100)
+      setConfigStatus('success', 'Configuration applied successfully')
+    } else {
+      setConfigStatus('error', 'Apply did not complete cleanly')
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'apply failed'
+    appendConfigLog(`Apply error: ${message}`)
+    setConfigStatus('error', message)
+  } finally {
+    configSession.isApplying = false
+    configSession.shouldCancel = false
+    refreshConfigControls()
+  }
+}
+
+configBaudSelect.addEventListener('change', () => {
+  refreshConfigControls()
+})
+
+configResetSelect.addEventListener('change', () => {
+  refreshConfigControls()
+})
+
+configEndSelect.addEventListener('change', () => {
+  refreshConfigControls()
+})
+
+configFileInput.addEventListener('change', () => {
+  const file = configFileInput.files?.[0]
+  if (!file) {
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => {
+    const result = reader.result
+    if (typeof result !== 'string') {
+      return
+    }
+    configJsonEditor.value = result
+    if (!configFilenameInput.value.trim()) {
+      configFilenameInput.value = file.name
+    }
+    validateConfigJson()
+    refreshConfigControls()
+    appendConfigLog(`Loaded JSON from "${file.name}" (${file.size} bytes).`)
+  }
+  reader.onerror = () => {
+    appendConfigLog(`Failed to read "${file.name}": ${reader.error?.message ?? 'unknown error'}`)
+  }
+  reader.readAsText(file)
+  // Reset so the same file can be re-picked after a Clear.
+  configFileInput.value = ''
+})
+
+configClearJsonBtn.addEventListener('click', () => {
+  configJsonEditor.value = ''
+  configFilenameInput.value = ''
+  validateConfigJson()
+  refreshConfigControls()
+})
+
+configJsonEditor.addEventListener('input', () => {
+  validateConfigJson()
+  refreshConfigControls()
+})
+
+configFilenameInput.addEventListener('input', () => {
+  refreshConfigControls()
+})
+
+configConnectBtn.addEventListener('click', () => {
+  void configConnect()
+})
+
+configDisconnectBtn.addEventListener('click', () => {
+  void configDisconnect()
+})
+
+configApplyBtn.addEventListener('click', () => {
+  void configApply()
+})
+
+configCancelBtn.addEventListener('click', () => {
+  if (!configSession.isApplying) {
+    return
+  }
+  configSession.shouldCancel = true
+  appendConfigLog('Cancellation requested...')
+  refreshConfigControls()
+})
+
+configCopyLogBtn.addEventListener('click', () => {
+  const text = configConsoleLines.join('\n')
+  if (!text) {
+    return
+  }
+  if (navigator.clipboard?.writeText) {
+    void navigator.clipboard.writeText(text)
+  }
+})
+
+configClearLogBtn.addEventListener('click', () => {
+  configConsoleLines = []
+  configConsoleOutputEl.textContent = ''
+})
+
 const initialize = () => {
   const { hadPathSegment, workspaceName } = getWorkspaceNameFromPath(window.location.pathname)
   if (!hadPathSegment || window.location.pathname !== getWorkspacePath(workspaceName)) {
@@ -3696,6 +4274,13 @@ const initialize = () => {
   showFlashProgress(false)
   setFlashStatus('idle')
 
+  populateConfigBaudSelect()
+  validateConfigJson()
+  showConfigPortInfo(null)
+  setConfigStatus('idle')
+  configControlsReady = true
+  refreshConfigControls()
+
   render()
 }
 
@@ -3720,6 +4305,9 @@ window.addEventListener('beforeunload', () => {
     releaseConnectionLock(pane.connectedUartName)
   }
   void disconnectFlashSession(flashSession)
+  if (configSession.port !== null) {
+    void closeConfigPort(configSession.port)
+  }
 })
 
 initialize()
