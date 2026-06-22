@@ -39,10 +39,459 @@ body {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.55rem;
   min-height: calc(100svh - 1.5rem);
   height: calc(100svh - 1.5rem);
   overflow: hidden;
+}
+
+.appTabs {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.28rem;
+  background: rgb(8 18 30 / 55%);
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 999px;
+  align-self: flex-start;
+  backdrop-filter: blur(8px);
+}
+
+.appTab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  padding: 0.4rem 0.92rem;
+  border-radius: 999px;
+  background: transparent;
+  color: rgb(215 244 255 / 78%);
+  font-size: 0.86rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.appTab:hover:not(:disabled) {
+  color: #fff;
+  background: rgb(255 255 255 / 8%);
+  transform: none;
+  filter: none;
+}
+
+.appTab.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  border-color: rgb(255 255 255 / 22%);
+  box-shadow: 0 8px 22px rgb(2 132 199 / 35%);
+}
+
+.appTabIcon {
+  font-size: 0.94rem;
+  line-height: 1;
+}
+
+.appTabLabel {
+  line-height: 1;
+}
+
+.tabPanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tabPanel.hidden {
+  display: none;
+}
+
+.terminalView {
+  min-height: 0;
+}
+
+.flashView {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.flashLayout {
+  display: grid;
+  gap: 0.6rem;
+  width: min(940px, 100%);
+  margin: 0 auto;
+  padding: 0.2rem 0 0.6rem;
+}
+
+.flashHeader {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.85rem 1rem;
+}
+
+.flashHeaderRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.flashTitle {
+  margin: 0;
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.flashHeaderMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.flashInlineField {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--subtle);
+}
+
+.flashInlineField select {
+  font-weight: 600;
+  font-size: 0.82rem;
+  padding: 0.32rem 0.5rem;
+  border-radius: 7px;
+  min-width: 8.5rem;
+}
+
+.flashCheckField {
+  gap: 0.32rem;
+}
+
+.flashCheckField input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
+}
+
+.flashHelp,
+.flashHelpHint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--subtle);
+}
+
+.flashBootHint {
+  margin: 0;
+  padding: 0.45rem 0.7rem;
+  background: rgb(245 158 11 / 12%);
+  border: 1px solid rgb(245 158 11 / 32%);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.flashBootHint kbd {
+  display: inline-block;
+  padding: 0.05rem 0.35rem;
+  border-radius: 5px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: var(--text);
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  box-shadow: 0 1px 0 #94a3b8;
+}
+
+.flashHelp code,
+.flashHelpHint code {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  background: #eef4fb;
+  padding: 0.05rem 0.32rem;
+  border-radius: 4px;
+  color: var(--accent-strong);
+}
+
+.flashFilesCard {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.85rem 1rem;
+}
+
+.flashFilesHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.flashFilesHeader h3,
+.flashConsoleHeader h3 {
+  margin: 0;
+  font-size: 0.94rem;
+}
+
+.flashFilesActions {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.flashSlotList {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.flashSlotEmpty {
+  margin: 0;
+  padding: 0.85rem;
+  background: #eef4fb;
+  border-radius: 8px;
+  text-align: center;
+  color: var(--subtle);
+  font-size: 0.84rem;
+}
+
+.flashSlot {
+  display: grid;
+  grid-template-columns: minmax(6rem, 7rem) 1fr auto;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.55rem 0.7rem;
+  background: #f1f6fc;
+  border: 1px solid #d3dfee;
+  border-radius: 10px;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.flashSlot.isReady {
+  background: rgb(34 197 94 / 8%);
+  border-color: rgb(34 197 94 / 32%);
+}
+
+.flashSlotAddressBadge {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.3rem 0.55rem;
+  background: #0f2436;
+  color: #d7f4ff;
+  border-radius: 8px;
+  text-align: center;
+}
+
+.flashSlotAddressLabel {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgb(215 244 255 / 65%);
+}
+
+.flashSlotAddressValue {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-weight: 700;
+  font-size: 0.88rem;
+  letter-spacing: 0.02em;
+}
+
+.flashSlotMain {
+  min-width: 0;
+}
+
+.flashSlotLabel {
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
+.flashSlotFilename {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: var(--subtle);
+}
+
+.flashSlotFile {
+  margin: 0.18rem 0 0;
+  color: var(--subtle);
+  font-size: 0.78rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  overflow: hidden;
+}
+
+.flashSlotFileName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+.flashSlotFileSize {
+  flex-shrink: 0;
+  background: #dfeaf6;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.02rem 0.34rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.flashSlotFileEmpty {
+  font-style: italic;
+}
+
+.flashSlotActions {
+  display: inline-flex;
+  gap: 0.32rem;
+  align-items: center;
+}
+
+.flashActionsCard {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.85rem 1rem;
+}
+
+.flashActionsRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.flashStartBtn {
+  margin-left: auto;
+  min-width: 9rem;
+}
+
+.flashChipInfo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.7rem;
+  background: rgb(34 197 94 / 12%);
+  border: 1px solid rgb(34 197 94 / 32%);
+  border-radius: 10px;
+}
+
+.flashChipDot {
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 999px;
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgb(22 163 74 / 22%);
+}
+
+.flashChipDetail {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.flashChipName {
+  margin: 0;
+  font-weight: 700;
+  color: #166534;
+  font-size: 0.92rem;
+}
+
+.flashChipMac {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--subtle);
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+.flashProgress {
+  display: grid;
+  gap: 0.32rem;
+  padding: 0.55rem 0.7rem;
+  background: #eef4fb;
+  border-radius: 10px;
+}
+
+.flashProgress.isError {
+  background: rgb(198 40 40 / 10%);
+}
+
+.flashProgress.isSuccess {
+  background: rgb(22 163 74 / 12%);
+}
+
+.flashProgressLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.82rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.flashProgressBar {
+  height: 0.42rem;
+  background: #d8e3f1;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.flashProgressFill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  transition: width 0.18s ease;
+}
+
+.flashProgress.isError .flashProgressFill {
+  background: linear-gradient(90deg, #ef4444, #b91c1c);
+}
+
+.flashProgress.isSuccess .flashProgressFill {
+  background: linear-gradient(90deg, #22c55e, #15803d);
+}
+
+.flashConsoleCard {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.85rem 1rem;
+}
+
+.flashConsoleHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.flashConsoleActions {
+  display: inline-flex;
+  gap: 0.32rem;
+}
+
+.flashConsoleOutput {
+  margin: 0;
+  min-height: 9rem;
+  max-height: 18rem;
+  overflow: auto;
+  padding: 0.7rem 0.85rem;
+  background: #050b14;
+  color: #b8ffc6;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.78rem;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .socialDock {

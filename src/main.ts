@@ -8,6 +8,21 @@ import {
 } from './serialService'
 import { createPaneStore } from './paneStore'
 import { getShareApiBase, getShareWsBase } from './shareConfig'
+import {
+  createFlashSession,
+  defaultFlashBaud,
+  detectChip as flashDetectChip,
+  disconnectFlashSession,
+  flashBaudRates,
+  flashFirmware,
+  formatAddress as formatFlashAddress,
+  formatFileSize as formatFlashFileSize,
+  requestFlashPort,
+  type FlashChipInfo,
+  type FlashFile,
+  type FlashSession,
+  type FlashTerminal,
+} from './flashService'
 
 type Parity = 'none' | 'even' | 'odd'
 type FlowControl = 'none' | 'hardware'
@@ -140,6 +155,33 @@ app.innerHTML = `
     </a>
   </div>
   <main class="layout">
+    <nav class="appTabs" role="tablist" aria-label="Application sections">
+      <button
+        id="terminalTabBtn"
+        class="appTab active"
+        type="button"
+        role="tab"
+        aria-selected="true"
+        aria-controls="terminalView"
+        data-tab="terminal"
+      >
+        <span class="appTabIcon" aria-hidden="true">▣</span>
+        <span class="appTabLabel">Terminal</span>
+      </button>
+      <button
+        id="flashTabBtn"
+        class="appTab"
+        type="button"
+        role="tab"
+        aria-selected="false"
+        aria-controls="flashView"
+        data-tab="flash"
+      >
+        <span class="appTabIcon" aria-hidden="true">⚡</span>
+        <span class="appTabLabel">Flash</span>
+      </button>
+    </nav>
+
     <section id="firstOpenTip" class="tip card hidden" aria-hidden="true">
       <div>
         <strong>Split tip:</strong> right-click inside any pane to split vertically or horizontally. Max 6 panes.
@@ -150,7 +192,96 @@ app.innerHTML = `
       <button id="dismissTipBtn" class="ghost" type="button">Got it</button>
     </section>
 
-    <section id="splitRoot" class="splitRoot"></section>
+    <section
+      id="terminalView"
+      class="tabPanel terminalView"
+      role="tabpanel"
+      aria-labelledby="terminalTabBtn"
+    >
+      <section id="splitRoot" class="splitRoot"></section>
+    </section>
+
+    <section
+      id="flashView"
+      class="tabPanel flashView hidden"
+      role="tabpanel"
+      aria-labelledby="flashTabBtn"
+      aria-hidden="true"
+    >
+      <div class="flashLayout">
+        <header class="flashHeader card">
+          <div class="flashHeaderRow">
+            <h2 class="flashTitle">ESP32-S3 Firmware Flasher</h2>
+            <div class="flashHeaderMeta">
+              <label class="flashInlineField">
+                <span>Baud</span>
+                <select id="flashBaud">
+                  ${flashBaudRates
+                    .map(
+                      (rate) =>
+                        `<option value="${rate}" ${rate === defaultFlashBaud ? 'selected' : ''}>${rate.toLocaleString()}</option>`,
+                    )
+                    .join('')}
+                </select>
+              </label>
+              <label class="flashInlineField flashCheckField" title="Erase the entire flash chip first (slow). Off matches flash-radar.bat.">
+                <input id="flashEraseAll" type="checkbox" />
+                <span>Erase entire chip</span>
+              </label>
+              <label class="flashInlineField flashCheckField" title="Compress data over UART (faster). On matches flash-radar.bat.">
+                <input id="flashCompress" type="checkbox" checked />
+                <span>Compress</span>
+              </label>
+            </div>
+          </div>
+          <p class="flashHelp" id="flashStatus">
+            Upload the four <code>.bin</code> files below, then Connect → Detect chip → Flash.
+            Mirrors <code>flash-radar.bat</code> (esp32s3 / dio / 8MB / 80MHz / 460800).
+          </p>
+          <p class="flashBootHint">
+            <strong>Tip:</strong> if Detect chip fails, hold <kbd>BOOT</kbd>, tap <kbd>RESET</kbd>,
+            release <kbd>BOOT</kbd>, then retry.
+          </p>
+        </header>
+
+        <section class="flashFilesCard card">
+          <div class="flashFilesHeader">
+            <h3>Firmware files</h3>
+          </div>
+          <div id="flashSlotList" class="flashSlotList"></div>
+        </section>
+
+        <section class="flashActionsCard card">
+          <div class="flashActionsRow">
+            <button id="flashConnectBtn" class="primary" type="button">Connect</button>
+            <button id="flashDisconnectBtn" class="ghost" type="button" disabled>Disconnect</button>
+            <button id="flashDetectBtn" class="ghost" type="button" disabled>Detect chip</button>
+            <button id="flashStartBtn" class="primary flashStartBtn" type="button" disabled>⚡ Flash</button>
+          </div>
+          <div id="flashChipInfo" class="flashChipInfo hidden" aria-live="polite"></div>
+          <div id="flashProgress" class="flashProgress hidden" aria-live="polite">
+            <div class="flashProgressLabel">
+              <span id="flashProgressMessage">Idle</span>
+              <span id="flashProgressPercent">0%</span>
+            </div>
+            <div class="flashProgressBar">
+              <div id="flashProgressFill" class="flashProgressFill" style="width: 0%"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="flashConsoleCard card">
+          <div class="flashConsoleHeader">
+            <h3>Console</h3>
+            <div class="flashConsoleActions">
+              <button id="flashCopyLogBtn" class="ghost mini" type="button">Copy</button>
+              <button id="flashClearLogBtn" class="ghost mini" type="button">Clear</button>
+            </div>
+          </div>
+          <pre id="flashConsoleOutput" class="flashConsoleOutput" aria-live="polite"></pre>
+        </section>
+      </div>
+    </section>
   </main>
 
   <div id="paneMenu" class="paneMenu hidden" aria-hidden="true">
@@ -464,6 +595,27 @@ const claimConnectionLock = (uartName: string) => {
 }
 
 const splitRootEl = document.querySelector<HTMLElement>('#splitRoot')
+const terminalTabBtn = document.querySelector<HTMLButtonElement>('#terminalTabBtn')
+const flashTabBtn = document.querySelector<HTMLButtonElement>('#flashTabBtn')
+const terminalViewEl = document.querySelector<HTMLElement>('#terminalView')
+const flashViewEl = document.querySelector<HTMLElement>('#flashView')
+const flashBaudEl = document.querySelector<HTMLSelectElement>('#flashBaud')
+const flashEraseAllEl = document.querySelector<HTMLInputElement>('#flashEraseAll')
+const flashCompressEl = document.querySelector<HTMLInputElement>('#flashCompress')
+const flashSlotListEl = document.querySelector<HTMLElement>('#flashSlotList')
+const flashConnectBtn = document.querySelector<HTMLButtonElement>('#flashConnectBtn')
+const flashDisconnectBtn = document.querySelector<HTMLButtonElement>('#flashDisconnectBtn')
+const flashDetectBtn = document.querySelector<HTMLButtonElement>('#flashDetectBtn')
+const flashStartBtn = document.querySelector<HTMLButtonElement>('#flashStartBtn')
+const flashChipInfoEl = document.querySelector<HTMLElement>('#flashChipInfo')
+const flashProgressEl = document.querySelector<HTMLElement>('#flashProgress')
+const flashProgressMessageEl = document.querySelector<HTMLElement>('#flashProgressMessage')
+const flashProgressPercentEl = document.querySelector<HTMLElement>('#flashProgressPercent')
+const flashProgressFillEl = document.querySelector<HTMLElement>('#flashProgressFill')
+const flashConsoleOutputEl = document.querySelector<HTMLElement>('#flashConsoleOutput')
+const flashCopyLogBtn = document.querySelector<HTMLButtonElement>('#flashCopyLogBtn')
+const flashClearLogBtn = document.querySelector<HTMLButtonElement>('#flashClearLogBtn')
+const flashStatusEl = document.querySelector<HTMLElement>('#flashStatus')
 const paneMenuEl = document.querySelector<HTMLDivElement>('#paneMenu')
 const quickCommandMenuEl = document.querySelector<HTMLDivElement>('#quickCommandMenu')
 const timerCommandMenuEl = document.querySelector<HTMLDivElement>('#timerCommandMenu')
@@ -513,6 +665,27 @@ const timerCommandErrorEl = document.querySelector<HTMLElement>('#timerCommandEr
 
 if (
   !splitRootEl ||
+  !terminalTabBtn ||
+  !flashTabBtn ||
+  !terminalViewEl ||
+  !flashViewEl ||
+  !flashBaudEl ||
+  !flashEraseAllEl ||
+  !flashCompressEl ||
+  !flashSlotListEl ||
+  !flashConnectBtn ||
+  !flashDisconnectBtn ||
+  !flashDetectBtn ||
+  !flashStartBtn ||
+  !flashChipInfoEl ||
+  !flashProgressEl ||
+  !flashProgressMessageEl ||
+  !flashProgressPercentEl ||
+  !flashProgressFillEl ||
+  !flashConsoleOutputEl ||
+  !flashCopyLogBtn ||
+  !flashClearLogBtn ||
+  !flashStatusEl ||
   !paneMenuEl ||
   !quickCommandMenuEl ||
   !timerCommandMenuEl ||
@@ -556,6 +729,13 @@ if (
   !timerCommandErrorEl
 ) {
   throw new Error('Failed to locate required UI elements')
+}
+
+let flashControlsReady = false
+const refreshFlashControlsIfReady = () => {
+  if (flashControlsReady) {
+    refreshFlashControls()
+  }
 }
 
 let paneIdCounter = 0
@@ -1048,6 +1228,7 @@ const disconnectPane = async (paneId: string, appendNote = true) => {
 
   updateHeartbeat()
   render()
+  refreshFlashControlsIfReady()
 }
 
 const readLoop = async (paneId: string) => {
@@ -1123,6 +1304,7 @@ const connectPane = async (paneId: string) => {
 
     updateHeartbeat()
     render()
+    refreshFlashControlsIfReady()
     void readLoop(paneId)
   } catch (error) {
     releaseConnectionLock(pane.uartName)
@@ -3032,6 +3214,461 @@ saveSettingsBtn.addEventListener('click', () => {
   render()
 })
 
+type FlashStatus =
+  | 'idle'
+  | 'connecting'
+  | 'detecting'
+  | 'flashing'
+  | 'success'
+  | 'error'
+
+type FlashSlot = {
+  id: 'bootloader' | 'partitions' | 'ota_data' | 'app'
+  label: string
+  filename: string
+  address: number
+  file: File | null
+}
+
+const createFlashSlots = (): FlashSlot[] => [
+  {
+    id: 'bootloader',
+    label: 'Bootloader',
+    filename: 'bootloader.bin',
+    address: 0x0,
+    file: null,
+  },
+  {
+    id: 'partitions',
+    label: 'Partition table',
+    filename: 'partition-table.bin',
+    address: 0x8000,
+    file: null,
+  },
+  {
+    id: 'ota_data',
+    label: 'OTA data',
+    filename: 'ota_data_initial.bin',
+    address: 0xd000,
+    file: null,
+  },
+  {
+    id: 'app',
+    label: 'Application firmware',
+    filename: 'mmwave_radar2_idf.bin',
+    address: 0x10000,
+    file: null,
+  },
+]
+
+const flashSession: FlashSession = createFlashSession()
+const flashSlots: FlashSlot[] = createFlashSlots()
+let flashConsoleLines: string[] = []
+let flashIsBusy = false
+let activeAppTab: 'terminal' | 'flash' = 'terminal'
+
+const renderFlashSlots = () => {
+  flashSlotListEl.innerHTML = flashSlots
+    .map((slot) => {
+      const hasFile = slot.file !== null
+      const fileName = slot.file ? escapeHtml(slot.file.name) : 'No file selected'
+      const fileSize = slot.file ? formatFlashFileSize(slot.file.size) : ''
+      const addressHex = formatFlashAddress(slot.address)
+      return `
+        <div class="flashSlot ${hasFile ? 'isReady' : ''}" data-slot-id="${slot.id}">
+          <div class="flashSlotAddressBadge" title="Flash address">
+            <span class="flashSlotAddressLabel">addr</span>
+            <span class="flashSlotAddressValue">${addressHex}</span>
+          </div>
+          <div class="flashSlotMain">
+            <p class="flashSlotLabel">
+              ${escapeHtml(slot.label)}
+              <span class="flashSlotFilename">${escapeHtml(slot.filename)}</span>
+            </p>
+            <p class="flashSlotFile ${hasFile ? '' : 'flashSlotFileEmpty'}">
+              <span class="flashSlotFileName">${fileName}</span>
+              ${fileSize ? `<span class="flashSlotFileSize">${escapeHtml(fileSize)}</span>` : ''}
+            </p>
+          </div>
+          <div class="flashSlotActions">
+            <button class="ghost mini" data-flash-action="pick-file" data-slot-id="${slot.id}" type="button">
+              ${hasFile ? 'Replace' : 'Choose .bin'}
+            </button>
+            ${hasFile
+              ? `<button class="ghost mini" data-flash-action="clear-file" data-slot-id="${slot.id}" type="button" title="Remove file">✕</button>`
+              : ''}
+          </div>
+        </div>
+      `
+    })
+    .join('')
+}
+
+const refreshFlashControls = () => {
+  const hasPort = flashSession.port !== null
+  const hasLoader = flashSession.loader !== null
+  const missingCount = flashSlots.reduce((count, slot) => count + (slot.file ? 0 : 1), 0)
+  const hasAllFiles = missingCount === 0
+  const anyTerminalConnected = Array.from(panes.values()).some((pane) => pane.isConnected)
+
+  flashConnectBtn.disabled = flashIsBusy || hasPort || anyTerminalConnected
+  flashDisconnectBtn.disabled = flashIsBusy || !hasPort
+  flashDetectBtn.disabled = flashIsBusy || !hasPort
+  flashStartBtn.disabled = flashIsBusy || !hasAllFiles || !hasLoader
+
+  flashConnectBtn.textContent = anyTerminalConnected ? 'Disconnect terminal first' : 'Connect'
+  flashStartBtn.textContent = hasAllFiles
+    ? '⚡ Flash all 4 files'
+    : `⚡ Flash (${4 - missingCount}/4 files)`
+
+  flashBaudEl.disabled = flashIsBusy || hasLoader
+  flashEraseAllEl.disabled = flashIsBusy
+  flashCompressEl.disabled = flashIsBusy
+}
+
+const setFlashStatusMessage = (message: string) => {
+  flashStatusEl.textContent = message
+}
+
+const appendFlashLog = (line: string) => {
+  flashConsoleLines.push(line)
+  if (flashConsoleLines.length > 2000) {
+    flashConsoleLines = flashConsoleLines.slice(-1500)
+  }
+  flashConsoleOutputEl.textContent = flashConsoleLines.join('\n')
+  flashConsoleOutputEl.scrollTop = flashConsoleOutputEl.scrollHeight
+}
+
+const writeFlashLogPartial = (data: string) => {
+  if (flashConsoleLines.length === 0) {
+    flashConsoleLines.push(data)
+  } else {
+    flashConsoleLines[flashConsoleLines.length - 1] += data
+  }
+  flashConsoleOutputEl.textContent = flashConsoleLines.join('\n')
+  flashConsoleOutputEl.scrollTop = flashConsoleOutputEl.scrollHeight
+}
+
+const flashTerminal: FlashTerminal = {
+  clean: () => {
+    flashConsoleLines = []
+    flashConsoleOutputEl.textContent = ''
+  },
+  writeLine: (data) => appendFlashLog(data),
+  write: (data) => writeFlashLogPartial(data),
+}
+
+const showFlashChipInfo = (chip: FlashChipInfo | null) => {
+  if (!chip) {
+    flashChipInfoEl.classList.add('hidden')
+    flashChipInfoEl.innerHTML = ''
+    return
+  }
+  flashChipInfoEl.classList.remove('hidden')
+  flashChipInfoEl.innerHTML = `
+    <span class="flashChipDot" aria-hidden="true"></span>
+    <div class="flashChipDetail">
+      <p class="flashChipName">${escapeHtml(chip.chipName)}</p>
+      ${chip.macAddress ? `<p class="flashChipMac">MAC: ${escapeHtml(chip.macAddress)}</p>` : ''}
+    </div>
+  `
+}
+
+const showFlashProgress = (
+  show: boolean,
+  options?: { percent?: number; message?: string },
+) => {
+  if (!show) {
+    flashProgressEl.classList.add('hidden')
+    return
+  }
+  flashProgressEl.classList.remove('hidden')
+  const percent = Math.max(0, Math.min(100, Math.round(options?.percent ?? 0)))
+  flashProgressFillEl.style.width = `${percent}%`
+  flashProgressPercentEl.textContent = `${percent}%`
+  if (typeof options?.message === 'string') {
+    flashProgressMessageEl.textContent = options.message
+  }
+}
+
+const setFlashStatus = (next: FlashStatus, message?: string) => {
+  flashProgressEl.classList.toggle('isError', next === 'error')
+  flashProgressEl.classList.toggle('isSuccess', next === 'success')
+  if (message) {
+    setFlashStatusMessage(message)
+  }
+}
+
+const flashConnect = async () => {
+  if (flashIsBusy) {
+    return
+  }
+  const anyTerminalConnected = Array.from(panes.values()).some((pane) => pane.isConnected)
+  if (anyTerminalConnected) {
+    window.alert(
+      'A pane is currently connected to a serial port. Disconnect all terminal sessions before flashing.',
+    )
+    return
+  }
+  try {
+    flashIsBusy = true
+    refreshFlashControls()
+    setFlashStatus('connecting', 'Requesting serial port...')
+    appendFlashLog('Requesting serial port...')
+    const port = await requestFlashPort()
+    flashSession.port = port
+    appendFlashLog('Port selected.')
+    setFlashStatus('idle', 'Port selected. Click "Detect chip" to begin.')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to select port'
+    appendFlashLog(`Error: ${message}`)
+    setFlashStatus('error', message)
+  } finally {
+    flashIsBusy = false
+    refreshFlashControls()
+  }
+}
+
+const flashDisconnect = async () => {
+  if (flashIsBusy) {
+    return
+  }
+  try {
+    flashIsBusy = true
+    refreshFlashControls()
+    appendFlashLog('Disconnecting...')
+    await disconnectFlashSession(flashSession)
+    showFlashChipInfo(null)
+    showFlashProgress(false)
+    setFlashStatus('idle', 'Disconnected.')
+    appendFlashLog('Disconnected.')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Disconnect failed'
+    appendFlashLog(`Error: ${message}`)
+    setFlashStatus('error', message)
+  } finally {
+    flashIsBusy = false
+    refreshFlashControls()
+  }
+}
+
+const flashDetect = async () => {
+  if (flashIsBusy) {
+    return
+  }
+  if (!flashSession.port) {
+    setFlashStatus('error', 'Connect a port first.')
+    return
+  }
+  try {
+    flashIsBusy = true
+    refreshFlashControls()
+    setFlashStatus('detecting', 'Detecting chip...')
+    showFlashProgress(true, { message: 'Detecting chip...', percent: 0 })
+    const baudRate = Number(flashBaudEl.value) || defaultFlashBaud
+    const chip = await flashDetectChip(flashSession, flashSession.port, baudRate, flashTerminal)
+    showFlashChipInfo(chip)
+    setFlashStatus('idle', `Chip detected: ${chip.chipName}`)
+    showFlashProgress(false)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Detect failed'
+    appendFlashLog(`Error: ${message}`)
+    setFlashStatus('error', message)
+    showFlashProgress(true, { message, percent: 0 })
+  } finally {
+    flashIsBusy = false
+    refreshFlashControls()
+  }
+}
+
+const flashStart = async () => {
+  if (flashIsBusy) {
+    return
+  }
+  const missing = flashSlots.filter((slot) => slot.file === null)
+  if (missing.length > 0) {
+    setFlashStatus(
+      'error',
+      `Missing files: ${missing.map((slot) => slot.filename).join(', ')}`,
+    )
+    return
+  }
+  if (!flashSession.loader) {
+    setFlashStatus('error', 'Run "Detect chip" before flashing.')
+    return
+  }
+
+  const filesToFlash: FlashFile[] = flashSlots
+    .filter((slot): slot is FlashSlot & { file: File } => slot.file !== null)
+    .map((slot) => ({ id: slot.id, file: slot.file, address: slot.address }))
+
+  try {
+    flashIsBusy = true
+    refreshFlashControls()
+    setFlashStatus('flashing', `Flashing ${filesToFlash.length} file(s)...`)
+    showFlashProgress(true, { message: 'Starting flash...', percent: 0 })
+    appendFlashLog('')
+    appendFlashLog(
+      `[Flash] Files: ${filesToFlash
+        .map((item) => `${formatFlashAddress(item.address)} ${item.file.name}`)
+        .join(', ')}`,
+    )
+
+    await flashFirmware(
+      flashSession,
+      {
+        files: filesToFlash,
+        eraseAll: flashEraseAllEl.checked,
+        compress: flashCompressEl.checked,
+        flashMode: 'dio',
+        flashSize: '8MB',
+        flashFreq: '80m',
+        onProgress: (fileIndex, written, total) => {
+          if (total <= 0) {
+            return
+          }
+          const percent = Math.round((written / total) * 100)
+          showFlashProgress(true, {
+            percent,
+            message: `Flashing file ${fileIndex + 1}/${filesToFlash.length}: ${percent}%`,
+          })
+        },
+      },
+      flashTerminal,
+    )
+
+    setFlashStatus('success', 'Flash complete! Port released.')
+    showFlashProgress(true, { percent: 100, message: 'Flash complete!' })
+
+    try {
+      appendFlashLog('Releasing port after flash...')
+      await disconnectFlashSession(flashSession, { hardReset: false })
+      showFlashChipInfo(null)
+      appendFlashLog('Port released. To flash another device, click Connect again.')
+    } catch (cleanupError) {
+      const message =
+        cleanupError instanceof Error ? cleanupError.message : 'cleanup failed'
+      appendFlashLog(`Cleanup warning: ${message}`)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Flash failed'
+    appendFlashLog(`Error: ${message}`)
+    setFlashStatus('error', message)
+    showFlashProgress(true, { message, percent: 0 })
+  } finally {
+    flashIsBusy = false
+    refreshFlashControls()
+  }
+}
+
+const openFilePickerForSlot = (slotId: string) => {
+  const slot = flashSlots.find((item) => item.id === slotId)
+  if (!slot) {
+    return
+  }
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.bin,.hex'
+  input.addEventListener('change', () => {
+    const file = input.files?.[0]
+    if (!file) {
+      return
+    }
+    slot.file = file
+    renderFlashSlots()
+    refreshFlashControls()
+  })
+  input.click()
+}
+
+const clearSlotFile = (slotId: string) => {
+  const slot = flashSlots.find((item) => item.id === slotId)
+  if (!slot) {
+    return
+  }
+  slot.file = null
+  renderFlashSlots()
+  refreshFlashControls()
+}
+
+const flashSetActiveTab = (tab: 'terminal' | 'flash') => {
+  if (activeAppTab === tab) {
+    return
+  }
+  activeAppTab = tab
+  const isTerminal = tab === 'terminal'
+  terminalTabBtn.classList.toggle('active', isTerminal)
+  terminalTabBtn.setAttribute('aria-selected', String(isTerminal))
+  flashTabBtn.classList.toggle('active', !isTerminal)
+  flashTabBtn.setAttribute('aria-selected', String(!isTerminal))
+  terminalViewEl.classList.toggle('hidden', !isTerminal)
+  terminalViewEl.setAttribute('aria-hidden', String(!isTerminal))
+  flashViewEl.classList.toggle('hidden', isTerminal)
+  flashViewEl.setAttribute('aria-hidden', String(isTerminal))
+  if (!isTerminal) {
+    refreshFlashControls()
+  }
+}
+
+terminalTabBtn.addEventListener('click', () => {
+  flashSetActiveTab('terminal')
+})
+
+flashTabBtn.addEventListener('click', () => {
+  flashSetActiveTab('flash')
+})
+
+flashSlotListEl.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+  const actionButton = target.closest<HTMLButtonElement>('button[data-flash-action]')
+  if (!actionButton) {
+    return
+  }
+  const action = actionButton.getAttribute('data-flash-action')
+  const slotId = actionButton.getAttribute('data-slot-id')
+  if (!action || !slotId) {
+    return
+  }
+  if (action === 'pick-file') {
+    openFilePickerForSlot(slotId)
+    return
+  }
+  if (action === 'clear-file') {
+    clearSlotFile(slotId)
+  }
+})
+
+flashConnectBtn.addEventListener('click', () => {
+  void flashConnect()
+})
+
+flashDisconnectBtn.addEventListener('click', () => {
+  void flashDisconnect()
+})
+
+flashDetectBtn.addEventListener('click', () => {
+  void flashDetect()
+})
+
+flashStartBtn.addEventListener('click', () => {
+  void flashStart()
+})
+
+flashCopyLogBtn.addEventListener('click', () => {
+  const text = flashConsoleLines.join('\n')
+  if (!text) {
+    return
+  }
+  if (navigator.clipboard?.writeText) {
+    void navigator.clipboard.writeText(text)
+  }
+})
+
+flashClearLogBtn.addEventListener('click', () => {
+  flashConsoleLines = []
+  flashConsoleOutputEl.textContent = ''
+})
+
 const initialize = () => {
   const { hadPathSegment, workspaceName } = getWorkspaceNameFromPath(window.location.pathname)
   if (!hadPathSegment || window.location.pathname !== getWorkspacePath(workspaceName)) {
@@ -3051,6 +3688,13 @@ const initialize = () => {
   if (!navigator.serial) {
     firstPane.statusMessage = 'Web Serial unsupported. Use Chrome or Edge on desktop.'
   }
+
+  renderFlashSlots()
+  flashControlsReady = true
+  refreshFlashControls()
+  showFlashChipInfo(null)
+  showFlashProgress(false)
+  setFlashStatus('idle')
 
   render()
 }
@@ -3075,6 +3719,7 @@ window.addEventListener('beforeunload', () => {
     }
     releaseConnectionLock(pane.connectedUartName)
   }
+  void disconnectFlashSession(flashSession)
 })
 
 initialize()
