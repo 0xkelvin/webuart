@@ -1,3 +1,5 @@
+name: webuart
+
 services:
   webuart:
     build:
@@ -10,3 +12,11 @@ services:
       ONLINE_UART_SHARE_API_BASE: ${ONLINE_UART_SHARE_API_BASE:-https://api.vietmq.com}
       ONLINE_UART_SHARE_WS_BASE: ${ONLINE_UART_SHARE_WS_BASE:-wss://api.vietmq.com}
     restart: unless-stopped
+    networks:
+      - default
+      - veea-camera
+
+networks:
+  veea-camera:
+    external: true
+    name: veea-camera_default
