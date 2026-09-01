@@ -35,6 +35,28 @@ export type FlashChip =
   | 'esp32h2'
   | 'esp8266'
 
+/**
+ * Reduce a chip string to a bare family token ("esp32s3") so a firmware's
+ * target can be compared with the connected board.
+ *
+ * Handles every shape esptool-js and ESP-IDF produce: `CHIP_NAME` ("ESP32-S3"),
+ * `getChipDescription()` ("ESP32-S3 (QFN56) (revision v0.2)", and the
+ * "unknown ESP32-S3 (revision v0.0)" fallback for unrecognised packages), and
+ * manifest fields ("esp32s3").
+ *
+ * Returns null when no family can be identified — callers must treat that as
+ * "cannot tell" and skip the comparison rather than assume a mismatch.
+ */
+export const normalizeChipName = (raw: string): string | null => {
+  const compact = raw.toLowerCase().replace(/[^a-z0-9]/g, '')
+  // Deliberately unanchored: descriptions may be prefixed ("unknown ESP32-S3").
+  const match = compact.match(/esp(8266|32)(s2|s3|c2|c3|c5|c61|c6|h2|p4)?/)
+  if (!match) {
+    return null
+  }
+  return `esp${match[1]}${match[2] ?? ''}`
+}
+
 export const flashBaudRates = [115200, 230400, 460800, 921600, 1500000] as const
 export const defaultFlashBaud: (typeof flashBaudRates)[number] = 460800
 

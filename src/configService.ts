@@ -76,6 +76,13 @@ class AtSerial {
   private decoder = new TextDecoder('utf-8', { fatal: false })
   private encoder = new TextEncoder()
   private buffer = ''
+  /**
+   * Characters dropped off the front of `buffer` by trimming. Marks are
+   * absolute stream offsets, so they stay valid across a trim; without this a
+   * trim would silently shift every outstanding mark and let waitForString
+   * match stale data from earlier in the session.
+   */
+  private trimmedChars = 0
   private readActive = true
   private readPromise: Promise<void>
   private listeners: Array<(chunk: string) => void> = []
@@ -106,7 +113,9 @@ class AtSerial {
           const text = this.decoder.decode(value, { stream: true })
           this.buffer += text
           if (this.buffer.length > AtSerial.MAX_BUFFER) {
-            this.buffer = this.buffer.slice(-AtSerial.TRIM_TO)
+            const removed = this.buffer.length - AtSerial.TRIM_TO
+            this.buffer = this.buffer.slice(removed)
+            this.trimmedChars += removed
           }
           for (const listener of this.listeners) {
             try {
@@ -122,9 +131,32 @@ class AtSerial {
     }
   }
 
-  /** Snapshot of the receive buffer length, useful as a mark for waitForString. */
+  /** Absolute stream offset, usable as a mark for waitForString across trims. */
   mark(): number {
-    return this.buffer.length
+    return this.trimmedChars + this.buffer.length
+  }
+
+  /** Translate an absolute mark into an index into the live buffer. */
+  private indexFor(mark: number): number {
+    return Math.max(0, mark - this.trimmedChars)
+  }
+
+  /**
+   * Read the rest of the line that follows `marker`, searching from `fromMark`.
+   * Returns null when the marker (or its terminating newline) has not arrived.
+   */
+  readLineAfter(marker: string, fromMark = 0): string | null {
+    const from = Math.max(0, this.indexFor(fromMark) - marker.length)
+    const at = this.buffer.indexOf(marker, from)
+    if (at < 0) {
+      return null
+    }
+    const valueStart = at + marker.length
+    const end = this.buffer.indexOf('\r\n', valueStart)
+    if (end < 0) {
+      return null
+    }
+    return this.buffer.slice(valueStart, end)
   }
 
   /** Wait for `keyword` to appear anywhere from `fromMark` onwards. */
@@ -139,7 +171,7 @@ class AtSerial {
       if (shouldCancel?.()) {
         throw new CancellationError()
       }
-      const haystackStart = Math.max(0, fromMark - keyword.length)
+      const haystackStart = Math.max(0, this.indexFor(fromMark) - keyword.length)
       if (this.buffer.indexOf(keyword, haystackStart) >= 0) {
         return true
       }
@@ -160,7 +192,7 @@ class AtSerial {
       if (shouldCancel?.()) {
         throw new CancellationError()
       }
-      const haystackStart = Math.max(0, fromMark - 64)
+      const haystackStart = Math.max(0, this.indexFor(fromMark) - 64)
       const slice = this.buffer.slice(haystackStart)
       for (const k of keywords) {
         if (slice.indexOf(k) >= 0) {
@@ -318,9 +350,23 @@ const utcTimestamp = (): string => {
   )
 }
 
+export type AtAssignmentResult =
+  | { ok: true }
+  /** No acknowledgement arrived; the value was probably not stored. */
+  | { ok: false; reason: 'timeout' }
+  /** The device acknowledged a different value than we sent (e.g. truncated). */
+  | { ok: false; reason: 'mismatch'; stored: string }
+
 /**
- * Send `AT+KEY=VALUE\r\n` (chunked for long values), wait for the firmware to
- * echo back `KEY=` (any case) within a generous timeout. Returns true on success.
+ * Send `AT+KEY=VALUE\r\n` (chunked for long values) and wait for the device to
+ * confirm the write.
+ *
+ * The firmware echoes the received line as `>> AT+KEY=VALUE` *before* it parses
+ * or stores anything, and only prints `<< KEY=<stored value>` once
+ * `config_save_key()` has committed to NVS. Waiting for a bare `KEY=` therefore
+ * matches our own echo and reports success even when nothing was written — so
+ * we wait for the `<< ` acknowledgement specifically, then compare the value it
+ * carries back to catch a payload truncated in transit.
  */
 const sendAtAssignment = async (
   serial: AtSerial,
@@ -328,11 +374,22 @@ const sendAtAssignment = async (
   value: string,
   shouldCancel?: () => boolean,
   timeoutMs = 5000,
-): Promise<boolean> => {
+): Promise<AtAssignmentResult> => {
   const startMark = serial.mark()
   const command = `AT+${key}=${value}\r\n`
   await serial.writeChunked(command, 64, 15)
-  return serial.waitForString(`${key}=`, timeoutMs, startMark, shouldCancel)
+
+  const ack = `<< ${key}=`
+  const acknowledged = await serial.waitForString(ack, timeoutMs, startMark, shouldCancel)
+  if (!acknowledged) {
+    return { ok: false, reason: 'timeout' }
+  }
+
+  const stored = serial.readLineAfter(ack, startMark)
+  if (stored !== null && stored !== value) {
+    return { ok: false, reason: 'mismatch', stored }
+  }
+  return { ok: true }
 }
 
 /**
@@ -459,12 +516,16 @@ export const applyConfig = async (options: ApplyConfigOptions): Promise<boolean>
     // Step 6: send mandatory metadata keys.
     const metaSend = async (key: string, value: string) => {
       status(`[${stepIndex + 1}/${totalSteps}] Write ${key} = ${value}`)
-      const ok = await sendAtAssignment(serial, key, value, shouldCancel)
+      const result = await sendAtAssignment(serial, key, value, shouldCancel)
       reportProgress(key, 'write')
-      if (!ok) {
-        warn(`${key}: no echo within timeout`)
+      if (!result.ok) {
+        warn(
+          result.reason === 'timeout'
+            ? `${key}: device did not acknowledge the write within timeout.`
+            : `${key}: device echoed back "${result.stored}" instead of "${value}".`,
+        )
       }
-      return ok
+      return result.ok
     }
 
     await metaSend('CFGFILE', configFilename)
@@ -480,6 +541,7 @@ export const applyConfig = async (options: ApplyConfigOptions): Promise<boolean>
     let okCount = 0
     let warnCount = 0
     let skipCount = 0
+    const failedKeys: string[] = []
     for (const [key, rawValue] of entries) {
       if (shouldCancel?.()) {
         throw new CancellationError()
@@ -492,13 +554,21 @@ export const applyConfig = async (options: ApplyConfigOptions): Promise<boolean>
       const value = typeof rawValue === 'string' ? rawValue : String(rawValue)
       const shortVal = value.length > 60 ? `${value.slice(0, 60)}...` : value
       status(`[${stepIndex + 1}/${totalSteps}] Write ${key} = ${shortVal}`)
-      const ok = await sendAtAssignment(serial, key, value, shouldCancel)
+      const result = await sendAtAssignment(serial, key, value, shouldCancel)
       reportProgress(key, 'write')
-      if (ok) {
+      if (result.ok) {
         okCount += 1
       } else {
+        failedKeys.push(key)
         warnCount += 1
-        warn(`${key}: no echo within timeout — value may still have been written.`)
+        if (result.reason === 'mismatch') {
+          error(
+            `${key}: device stored a DIFFERENT value — sent ${value.length} chars, ` +
+              `device echoed back ${result.stored.length}. The write was truncated or corrupted.`,
+          )
+        } else {
+          warn(`${key}: device did not acknowledge the write within timeout.`)
+        }
       }
     }
 
@@ -523,6 +593,15 @@ export const applyConfig = async (options: ApplyConfigOptions): Promise<boolean>
     }
 
     onProgress?.({ step: totalSteps, total: totalSteps, label: 'done', phase: 'done' })
+    if (failedKeys.length > 0) {
+      // Every key is confirmed against the device's post-write acknowledgement,
+      // so an unconfirmed key means the device may be running a partial config.
+      error(
+        `Configuration INCOMPLETE — ${failedKeys.length} key(s) unconfirmed: ` +
+          `${failedKeys.join(', ')}. Re-run before trusting this device.`,
+      )
+      return false
+    }
     status(`Configuration COMPLETE — ok=${okCount}, warn=${warnCount}, skip=${skipCount}`)
     return true
   } catch (err) {

@@ -17,6 +17,7 @@ import {
   flashFirmware,
   formatAddress as formatFlashAddress,
   formatFileSize as formatFlashFileSize,
+  normalizeChipName,
   requestFlashPort,
   type FlashChipInfo,
   type FlashFile,
@@ -33,7 +34,12 @@ import {
   type EndCommand,
   type ResetMode,
 } from './configService'
-import { extractFirmwareZip } from './zipArtifact'
+import {
+  extractFirmwareZip,
+  type FirmwareFileEntry,
+  type FirmwareFlashParams,
+  type FirmwareZipSummary,
+} from './zipArtifact'
 
 type Parity = 'none' | 'even' | 'odd'
 type FlowControl = 'none' | 'hardware'
@@ -258,8 +264,9 @@ app.innerHTML = `
             </div>
           </div>
           <p class="flashHelp" id="flashStatus">
-            Upload the four <code>.bin</code> files below, then Connect → Detect chip → Flash.
-            Mirrors <code>flash-radar.bat</code> (esp32s3 / dio / 8MB / 80MHz / 460800).
+            Load the firmware <code>.zip</code> below, then Connect → Detect chip → Flash.
+            Flash addresses come from the artifact itself (<code>flasher_args.json</code>, else
+            <code>partition-table.bin</code>) — never from hardcoded offsets.
           </p>
           <p class="flashBootHint">
             <strong>Tip:</strong> if Detect chip fails, hold <kbd>BOOT</kbd>, tap <kbd>RESET</kbd>,
@@ -274,7 +281,7 @@ app.innerHTML = `
               <label
                 class="primary mini flashZipLabel"
                 for="flashZipInput"
-                title="Load a CI artifact zip containing bootloader.bin, partition-table.bin, ota_data_initial.bin, mmwave_radar2_idf.bin"
+                title="Load a CI artifact zip (bootloader.bin, partition-table.bin, ota_data_initial.bin, the app .bin, and ideally flasher_args.json)"
               >📦 Load firmware .zip</label>
               <input id="flashZipInput" type="file" accept=".zip,application/zip,application/x-zip-compressed" hidden />
               <button id="flashClearZipBtn" class="ghost mini" type="button" disabled>Clear</button>
@@ -282,8 +289,10 @@ app.innerHTML = `
           </div>
           <p id="flashZipStatus" class="flashZipStatus" aria-live="polite">
             Load a <code>.zip</code> from your CI build (e.g. <code>gm_radar-wifi-1.zip</code>).
-            Addresses are hardcoded — only the four <code>.bin</code> files are extracted.
+            Addresses are read from the build's own flash map, so layout changes are picked up
+            automatically.
           </p>
+          <div id="flashPlan" class="flashPlan hidden" aria-live="polite"></div>
         </section>
 
         <section class="flashActionsCard card">
@@ -756,6 +765,7 @@ const flashCompressEl = document.querySelector<HTMLInputElement>('#flashCompress
 const flashZipInputEl = document.querySelector<HTMLInputElement>('#flashZipInput')
 const flashClearZipBtn = document.querySelector<HTMLButtonElement>('#flashClearZipBtn')
 const flashZipStatusEl = document.querySelector<HTMLElement>('#flashZipStatus')
+const flashPlanEl = document.querySelector<HTMLElement>('#flashPlan')
 const flashConnectBtn = document.querySelector<HTMLButtonElement>('#flashConnectBtn')
 const flashDisconnectBtn = document.querySelector<HTMLButtonElement>('#flashDisconnectBtn')
 const flashDetectBtn = document.querySelector<HTMLButtonElement>('#flashDetectBtn')
@@ -850,6 +860,7 @@ if (
   !flashZipInputEl ||
   !flashClearZipBtn ||
   !flashZipStatusEl ||
+  !flashPlanEl ||
   !flashConnectBtn ||
   !flashDisconnectBtn ||
   !flashDetectBtn ||
@@ -3426,47 +3437,36 @@ type FlashStatus =
   | 'success'
   | 'error'
 
-type FlashSlot = {
-  id: 'bootloader' | 'partitions' | 'ota_data' | 'app'
-  label: string
-  filename: string
-  address: number
-  file: File | null
+/**
+ * Last-resort address map, used only for a zip carrying neither
+ * `flasher_args.json` nor `partition-table.bin`. These offsets match gm_radar
+ * builds from before the partition table moved otadata to 0xf000 and the app
+ * to 0x20000, so a zip that falls through to them is flagged in the UI rather
+ * than trusted.
+ */
+const legacyFlashLayout = new Map<number, string>([
+  [0x0, 'bootloader.bin'],
+  [0x8000, 'partition-table.bin'],
+  [0xd000, 'ota_data_initial.bin'],
+  [0x10000, 'mmwave_radar2_idf.bin'],
+])
+
+const flashRoleLabels: Record<FirmwareFileEntry['role'], string> = {
+  bootloader: 'Bootloader',
+  partitions: 'Partition table',
+  ota_data: 'OTA data',
+  app: 'Application',
+  other: 'Data',
 }
 
-const createFlashSlots = (): FlashSlot[] => [
-  {
-    id: 'bootloader',
-    label: 'Bootloader',
-    filename: 'bootloader.bin',
-    address: 0x0,
-    file: null,
-  },
-  {
-    id: 'partitions',
-    label: 'Partition table',
-    filename: 'partition-table.bin',
-    address: 0x8000,
-    file: null,
-  },
-  {
-    id: 'ota_data',
-    label: 'OTA data',
-    filename: 'ota_data_initial.bin',
-    address: 0xd000,
-    file: null,
-  },
-  {
-    id: 'app',
-    label: 'Application firmware',
-    filename: 'mmwave_radar2_idf.bin',
-    address: 0x10000,
-    file: null,
-  },
-]
-
 const flashSession: FlashSession = createFlashSession()
-const flashSlots: FlashSlot[] = createFlashSlots()
+
+/** Resolved from the loaded zip; empty until one is loaded. */
+let flashPlan: FirmwareFileEntry[] = []
+/** Blocking layout problems. Non-empty disables the Flash button. */
+let flashPlanErrors: string[] = []
+let flashPlanParams: FirmwareFlashParams = {}
+let flashPlanChip: string | null = null
 let flashConsoleLines: string[] = []
 let flashIsBusy = false
 type AppTab = 'terminal' | 'flash' | 'config'
@@ -3475,19 +3475,23 @@ let activeAppTab: AppTab = 'terminal'
 const refreshFlashControls = () => {
   const hasPort = flashSession.port !== null
   const hasLoader = flashSession.loader !== null
-  const missingCount = flashSlots.reduce((count, slot) => count + (slot.file ? 0 : 1), 0)
-  const hasAllFiles = missingCount === 0
+  const hasFiles = flashPlan.length > 0
+  const planIsFlashable = hasFiles && flashPlanErrors.length === 0
   const anyTerminalConnected = Array.from(panes.values()).some((pane) => pane.isConnected)
 
   flashConnectBtn.disabled = flashIsBusy || hasPort || anyTerminalConnected
   flashDisconnectBtn.disabled = flashIsBusy || !hasPort
   flashDetectBtn.disabled = flashIsBusy || !hasPort
-  flashStartBtn.disabled = flashIsBusy || !hasAllFiles || !hasLoader
+  flashStartBtn.disabled = flashIsBusy || !planIsFlashable || !hasLoader
 
   flashConnectBtn.textContent = anyTerminalConnected ? 'Disconnect terminal first' : 'Connect'
-  flashStartBtn.textContent = hasAllFiles
-    ? '⚡ Flash all 4 files'
-    : `⚡ Flash (${4 - missingCount}/4 files)`
+  if (!hasFiles) {
+    flashStartBtn.textContent = '⚡ Flash (load a .zip)'
+  } else if (flashPlanErrors.length > 0) {
+    flashStartBtn.textContent = '⚡ Flash (layout check failed)'
+  } else {
+    flashStartBtn.textContent = `⚡ Flash ${flashPlan.length} file${flashPlan.length === 1 ? '' : 's'}`
+  }
 
   flashBaudEl.disabled = flashIsBusy || hasLoader
   flashEraseAllEl.disabled = flashIsBusy
@@ -3501,8 +3505,7 @@ const refreshFlashControls = () => {
     flashStartBtn.textContent = 'Parsing zip…'
   }
   flashZipInputEl.disabled = flashIsBusy || flashZipLoadInProgress
-  flashClearZipBtn.disabled =
-    flashIsBusy || flashZipLoadInProgress || missingCount === flashSlots.length
+  flashClearZipBtn.disabled = flashIsBusy || flashZipLoadInProgress || !hasFiles
 }
 
 const setFlashStatusMessage = (message: string) => {
@@ -3664,12 +3667,14 @@ const flashStart = async () => {
   if (flashIsBusy) {
     return
   }
-  const missing = flashSlots.filter((slot) => slot.file === null)
-  if (missing.length > 0) {
-    setFlashStatus(
-      'error',
-      `Missing files: ${missing.map((slot) => slot.filename).join(', ')}`,
-    )
+  if (flashPlan.length === 0) {
+    setFlashStatus('error', 'Load a firmware .zip first.')
+    return
+  }
+  if (flashPlanErrors.length > 0) {
+    // The plan disagrees with the partition table it would flash; writing it
+    // would leave the board unbootable, so refuse rather than warn.
+    setFlashStatus('error', `Layout check failed: ${flashPlanErrors[0]}`)
     return
   }
   if (!flashSession.loader) {
@@ -3677,9 +3682,33 @@ const flashStart = async () => {
     return
   }
 
-  const filesToFlash: FlashFile[] = flashSlots
-    .filter((slot): slot is FlashSlot & { file: File } => slot.file !== null)
-    .map((slot) => ({ id: slot.id, file: slot.file, address: slot.address }))
+  // Guard against flashing e.g. an esp32s3 build onto an esp32. `chipFamily`
+  // is esptool's bare CHIP_NAME; the verbose description is only a fallback.
+  // If either side cannot be identified we log and continue — a guard that
+  // blocks a good flash is worse than one that occasionally abstains, and the
+  // partition-table checks already cover the real brick risk.
+  const detectedChip = flashSession.chipInfo?.chipFamily || flashSession.chipInfo?.chipName || ''
+  if (flashPlanChip && detectedChip) {
+    const wanted = normalizeChipName(flashPlanChip)
+    const found = normalizeChipName(detectedChip)
+    if (wanted && found && wanted !== found) {
+      const message = `Firmware targets ${wanted} but the connected board is ${found}.`
+      appendFlashLog(`Error: ${message}`)
+      setFlashStatus('error', message)
+      return
+    }
+    if (!wanted || !found) {
+      appendFlashLog(
+        `Note: could not compare chip types (firmware "${flashPlanChip}" vs board "${detectedChip}").`,
+      )
+    }
+  }
+
+  const filesToFlash: FlashFile[] = flashPlan.map((entry, index) => ({
+    id: `${entry.role}-${index}`,
+    file: entry.file,
+    address: entry.address,
+  }))
 
   try {
     flashIsBusy = true
@@ -3699,9 +3728,11 @@ const flashStart = async () => {
         files: filesToFlash,
         eraseAll: flashEraseAllEl.checked,
         compress: flashCompressEl.checked,
-        flashMode: 'dio',
-        flashSize: '8MB',
-        flashFreq: '80m',
+        // Taken from the artifact (manifest, else the app image header) so a
+        // rebuild with different flash settings still flashes correctly.
+        flashMode: flashPlanParams.mode ?? 'keep',
+        flashSize: flashPlanParams.size ?? 'keep',
+        flashFreq: flashPlanParams.freq ?? 'keep',
         onProgress: (fileIndex, written, total) => {
           if (total <= 0) {
             return
@@ -3757,19 +3788,81 @@ const setFlashZipStatus = (
 
 let flashZipLoadInProgress = false
 
-const clearAllSlotFiles = (): void => {
-  for (const slot of flashSlots) {
-    slot.file = null
+const ZIP_HINT_HTML =
+  'Load a <code>.zip</code> from your CI build (e.g. <code>gm_radar-wifi-1.zip</code>). ' +
+  'Addresses are read from the build\'s own flash map, so layout changes are picked up ' +
+  'automatically.'
+
+/**
+ * Show the resolved plan as an address table. The whole point of the rework is
+ * that addresses are no longer fixed, so the user needs to see the ones that
+ * will actually be written.
+ */
+const renderFlashPlan = (): void => {
+  if (flashPlan.length === 0 && flashPlanErrors.length === 0) {
+    flashPlanEl.classList.add('hidden')
+    flashPlanEl.innerHTML = ''
+    return
   }
+  flashPlanEl.classList.remove('hidden')
+
+  const rows = flashPlan
+    .map((entry) => {
+      const target = entry.partitionLabel
+        ? `<code>${escapeHtml(entry.partitionLabel)}</code>`
+        : '<span class="flashPlanMuted">—</span>'
+      return (
+        '<tr>' +
+        `<td><code>${escapeHtml(formatFlashAddress(entry.address))}</code></td>` +
+        `<td>${escapeHtml(flashRoleLabels[entry.role])}</td>` +
+        `<td>${escapeHtml(entry.name)}</td>` +
+        `<td>${escapeHtml(formatFlashFileSize(entry.size))}</td>` +
+        `<td>${target}</td>` +
+        '</tr>'
+      )
+    })
+    .join('')
+
+  const errorHtml = flashPlanErrors.length
+    ? '<ul class="flashPlanErrors">' +
+      flashPlanErrors.map((item) => `<li>${escapeHtml(item)}</li>`).join('') +
+      '</ul>'
+    : ''
+
+  flashPlanEl.innerHTML =
+    (rows
+      ? '<table class="flashPlanTable"><thead><tr>' +
+        '<th>Address</th><th>Role</th><th>File</th><th>Size</th><th>Partition</th>' +
+        '</tr></thead><tbody>' +
+        rows +
+        '</tbody></table>'
+      : '') + errorHtml
+}
+
+const clearFlashPlan = (): void => {
+  flashPlan = []
+  flashPlanErrors = []
+  flashPlanParams = {}
+  flashPlanChip = null
+  renderFlashPlan()
   refreshFlashControls()
-  flashClearZipBtn.disabled = true
+}
+
+const describeLayoutSource = (source: FirmwareZipSummary['layoutSource']): string => {
+  if (source === 'manifest') {
+    return 'flasher_args.json'
+  }
+  if (source === 'partition-table') {
+    return 'partition-table.bin'
+  }
+  return 'built-in fallback addresses'
 }
 
 const loadFirmwareZip = async (zip: File): Promise<void> => {
   // Ignore concurrent picks while a previous parse is still running. The user
   // would otherwise be able to overwrite the in-flight load's result with a
   // racing one — and during the race the Flash button would still expose the
-  // stale slot files from a previous successful load.
+  // stale plan from a previous successful load.
   if (flashZipLoadInProgress) {
     appendFlashLog(
       `Ignored "${zip.name}" — another firmware zip is still being parsed.`,
@@ -3778,105 +3871,83 @@ const loadFirmwareZip = async (zip: File): Promise<void> => {
   }
   flashZipLoadInProgress = true
 
-  // Immediately clear stale slot files so the Flash button is disabled until
-  // the new parse finishes. Without this, the user could click Flash while we
-  // were still parsing the new zip and end up flashing the *previous* artifact.
-  for (const slot of flashSlots) {
-    slot.file = null
-  }
-  refreshFlashControls()
-  flashClearZipBtn.disabled = true
+  // Drop the previous plan immediately so Flash is disabled until the new
+  // parse finishes; otherwise a click mid-parse would flash the old artifact.
+  clearFlashPlan()
 
   appendFlashLog(`Loading firmware zip: ${zip.name} (${formatFlashFileSize(zip.size)})...`)
   setFlashZipStatus(`Parsing <code>${escapeHtml(zip.name)}</code>...`, 'idle')
   try {
-    const expectedBasenames = new Map<number, string>(
-      flashSlots.map((slot) => [slot.address, slot.filename] as const),
-    )
-    // Only the app slot is allowed to use the "single leftover .bin" fallback;
-    // see ExtractFirmwareZipOptions.leftoverFallback. Bootloader / partition
-    // table / OTA-data slots always require an exact name match (or a manifest)
-    // — flashing a random .bin to 0x0 could brick the device.
-    const appSlot = flashSlots.find((slot) => slot.id === 'app')
-    const summary = await extractFirmwareZip(zip, expectedBasenames, {
-      leftoverFallback: appSlot ? { address: appSlot.address } : undefined,
-    })
+    const summary = await extractFirmwareZip(zip, { defaultLayout: legacyFlashLayout })
 
-    // Hydrate slots by address. Missing addresses leave their slot empty.
-    for (const slot of flashSlots) {
-      const matched = summary.filesByAddress.get(slot.address)
-      slot.file = matched ?? null
-    }
+    flashPlan = summary.entries
+    flashPlanErrors = summary.errors
+    flashPlanParams = summary.flashParams
+    flashPlanChip = summary.flashParams.chip ?? summary.chipName ?? null
+    renderFlashPlan()
     refreshFlashControls()
-    flashClearZipBtn.disabled = false
 
-    const matchedDescr = summary.matchedAddresses
-      .map((addr) => formatFlashAddress(addr))
-      .join(', ')
-    const slotForAddress = (addr: number) => flashSlots.find((s) => s.address === addr)
-    const missingDescrItems = summary.missingAddresses.map((addr) => {
-      const slot = slotForAddress(addr)
-      const expected = slot ? slot.filename : ''
-      return `${formatFlashAddress(addr)}${expected ? ` (${expected})` : ''}`
-    })
-    const missingDescr = missingDescrItems.join(', ')
-
-    if (summary.missingAddresses.length === 0) {
-      const source = summary.usedManifest ? 'flasher_args.json manifest' : 'filename match'
-      setFlashZipStatus(
-        `<strong>${escapeHtml(zip.name)}</strong> loaded via ${source} — all 4 files matched (${matchedDescr}).`,
-        'ok',
-      )
-      appendFlashLog(`Zip loaded: matched all 4 slots via ${source}.`)
-      if (summary.manifestParams) {
-        const { mode, size, freq, chip } = summary.manifestParams
-        appendFlashLog(
-          `Manifest flash params: chip=${chip ?? '?'} mode=${mode ?? '?'} size=${size ?? '?'} freq=${freq ?? '?'} (UI keeps esp32s3 / dio / 8MB / 80m).`,
-        )
-      }
-    } else if (summary.matchedAddresses.length === 0) {
-      // Totally wrong zip — none of the expected files were inside.
-      const binList = summary.binFilesInZip
-        .map((entry) => `<code>${escapeHtml(entry.path)}</code>`)
-        .join(', ')
-      setFlashZipStatus(
-        `<strong>${escapeHtml(zip.name)}</strong> contains none of the expected firmware files. ` +
-          `Expected: <code>bootloader.bin</code>, <code>partition-table.bin</code>, ` +
-          `<code>ota_data_initial.bin</code>, <code>mmwave_radar2_idf.bin</code>. ` +
-          (binList ? `Found in zip: ${binList}.` : 'No .bin files were found inside the zip.'),
-        'error',
-      )
+    const sourceLabel = describeLayoutSource(summary.layoutSource)
+    appendFlashLog(
+      `Zip loaded: ${summary.entries.length} file(s), addresses from ${sourceLabel}.`,
+    )
+    for (const entry of summary.entries) {
       appendFlashLog(
-        `Zip rejected: none of the expected addresses matched. ` +
-          (summary.binFilesInZip.length
-            ? `.bin files in zip: ${summary.binFilesInZip.map((e) => e.path).join(', ')}`
-            : 'no .bin files in zip.'),
+        `  ${formatFlashAddress(entry.address)}  ${entry.name} ` +
+          `(${formatFlashFileSize(entry.size)})` +
+          (entry.partitionLabel ? ` -> ${entry.partitionLabel}` : ''),
       )
-    } else {
-      // Partial match — some files found, some missing.
-      const binList = summary.binFilesInZip
-        .map((entry) => `<code>${escapeHtml(entry.path)}</code>`)
-        .join(', ')
-      setFlashZipStatus(
-        `<strong>${escapeHtml(zip.name)}</strong> partially loaded — missing: ${escapeHtml(missingDescr)}. ` +
-          (binList
-            ? `Files seen in zip: ${binList}. ` +
-              'Re-zip with all four binaries (or include <code>flasher_args.json</code>).'
-            : 'Re-zip with bootloader.bin, partition-table.bin, ota_data_initial.bin, mmwave_radar2_idf.bin.'),
-        'partial',
-      )
-      appendFlashLog(
-        `Zip warning: missing files for ${missingDescr}. Matched: ${matchedDescr || 'none'}.`,
-      )
-      if (summary.binFilesInZip.length) {
-        appendFlashLog(
-          `.bin files seen in zip: ${summary.binFilesInZip.map((e) => `${e.path} (${formatFlashFileSize(e.size)})`).join(', ')}`,
-        )
-      }
     }
-
+    if (summary.partitions) {
+      appendFlashLog(
+        `Partition table: ${summary.partitions
+          .map((part) => `${part.label}@${formatFlashAddress(part.offset)}`)
+          .join(' ')}`,
+      )
+    }
+    const { mode, size, freq, chip } = summary.flashParams
+    appendFlashLog(
+      `Flash params: chip=${chip ?? '?'} mode=${mode ?? 'keep'} size=${size ?? 'keep'} freq=${freq ?? 'keep'}`,
+    )
     for (const warning of summary.warnings) {
       appendFlashLog(`[zip] ${warning}`)
+    }
+    for (const error of summary.errors) {
+      appendFlashLog(`[zip] BLOCKING: ${error}`)
+    }
+    if (summary.unassignedBins.length) {
+      appendFlashLog(
+        `Not flashed (no address in the build's flash map): ${summary.unassignedBins
+          .map((entry) => entry.path)
+          .join(', ')}`,
+      )
+    }
+
+    if (summary.errors.length > 0) {
+      setFlashZipStatus(
+        `<strong>${escapeHtml(zip.name)}</strong> — layout check failed. ` +
+          'Flashing is blocked because the addresses disagree with this build\'s partition table.',
+        'error',
+      )
+    } else if (summary.entries.length === 0) {
+      setFlashZipStatus(
+        `<strong>${escapeHtml(zip.name)}</strong> contains no flashable firmware files.`,
+        'error',
+      )
+    } else if (summary.layoutSource === 'defaults') {
+      setFlashZipStatus(
+        `<strong>${escapeHtml(zip.name)}</strong> has no <code>flasher_args.json</code> or ` +
+          '<code>partition-table.bin</code>, so built-in fallback addresses were used. ' +
+          'Check the addresses below before flashing.',
+        'partial',
+      )
+    } else {
+      const chipSuffix = summary.chipName ? ` for <code>${escapeHtml(summary.chipName)}</code>` : ''
+      setFlashZipStatus(
+        `<strong>${escapeHtml(zip.name)}</strong> loaded${chipSuffix} — ` +
+          `${summary.entries.length} file(s), addresses from <code>${escapeHtml(sourceLabel)}</code>.`,
+        'ok',
+      )
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'failed to read zip'
@@ -3885,7 +3956,7 @@ const loadFirmwareZip = async (zip: File): Promise<void> => {
       `<strong>Failed to load ${escapeHtml(zip.name)}:</strong> ${escapeHtml(message)}`,
       'error',
     )
-    clearAllSlotFiles()
+    clearFlashPlan()
   } finally {
     flashZipLoadInProgress = false
     refreshFlashControls()
@@ -3946,13 +4017,9 @@ flashClearZipBtn.addEventListener('click', () => {
   if (flashIsBusy) {
     return
   }
-  clearAllSlotFiles()
-  setFlashZipStatus(
-    'Load a <code>.zip</code> from your CI build (e.g. <code>gm_radar-wifi-1.zip</code>). ' +
-      'Addresses are hardcoded — only the four <code>.bin</code> files are extracted.',
-    'idle',
-  )
-  appendFlashLog('Cleared firmware slots.')
+  clearFlashPlan()
+  setFlashZipStatus(ZIP_HINT_HTML, 'idle')
+  appendFlashLog('Cleared firmware plan.')
 })
 
 flashConnectBtn.addEventListener('click', () => {
@@ -4259,7 +4326,12 @@ const configApply = async (): Promise<void> => {
       setConfigProgressPercent(100)
       setConfigStatus('success', 'Configuration applied successfully')
     } else {
-      setConfigStatus('error', 'Apply did not complete cleanly')
+      // applyConfig only reports success when every key was confirmed by the
+      // device's post-write acknowledgement — see the console for which failed.
+      setConfigStatus(
+        'error',
+        'Apply did not complete cleanly — some keys were not confirmed by the device. See console.',
+      )
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'apply failed'
