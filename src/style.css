@@ -296,6 +296,59 @@ body {
   color: #991b1b;
 }
 
+/* Resolved flash plan: the addresses actually derived from the artifact.
+   Shown because addresses are no longer fixed by the UI. */
+.flashPlan {
+  margin-top: 0.55rem;
+}
+
+.flashPlanTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.flashPlanTable th,
+.flashPlanTable td {
+  text-align: left;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid #e3eaf3;
+}
+
+.flashPlanTable th {
+  font-weight: 600;
+  color: var(--subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.68rem;
+}
+
+.flashPlanTable tr:last-child td {
+  border-bottom: none;
+}
+
+.flashPlanTable code {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  color: var(--accent-strong);
+}
+
+.flashPlanMuted {
+  color: var(--subtle);
+  opacity: 0.7;
+}
+
+.flashPlanErrors {
+  margin: 0.55rem 0 0;
+  padding: 0.45rem 0.7rem 0.45rem 1.6rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: #991b1b;
+  background: rgb(220 38 38 / 10%);
+  border: 1px solid rgb(220 38 38 / 38%);
+  border-radius: 8px;
+}
+
 .flashActionsCard {
   display: grid;
   gap: 0.55rem;
