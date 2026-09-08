@@ -105,6 +105,21 @@ Expected:
 
 ## Troubleshooting
 
+### Apply Config reports "device stored a DIFFERENT value" for every key
+
+The ESP32 console doubles the carriage return: `at_cmd.c` prints
+`"<< KEY=value\r\n\r\n"`, and the ESP-IDF UART VFS
+(`CONFIG_NEWLIB_STDOUT_LINE_ENDING_CRLF`) expands each `\n` again, so the wire
+carries `<< KEY=value\r\r\n\r\r\n`.
+
+A reader that ends the value at the first `\r\n` therefore captures
+`value\r` — one character too long — and the verification in `configService.ts`
+rejects every key even though the device stored the right value. Line parsing
+against this firmware must terminate on `\n` and strip trailing `\r`.
+
+`src/configService.test.ts` reproduces the doubling in its `FakeDevice.send()`;
+keep it that way or the regression becomes invisible again.
+
 ### Viewer link redirects to `/webuart/uart-a`
 
 If opening `https://your-domain/viewer.html?s=<session-id>` redirects to the main app route, the frontend build is usually missing `dist/viewer.html`.

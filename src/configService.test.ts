@@ -58,7 +58,12 @@ class FakeDevice {
 
   private send(text: string) {
     try {
-      this.controller.enqueue(this.encoder.encode(text))
+      // The firmware's printf strings already carry "\r\n", and the ESP-IDF
+      // console (CONFIG_NEWLIB_STDOUT_LINE_ENDING_CRLF) expands every "\n"
+      // again on the way out — so the wire really carries "\r\r\n". Reproduce
+      // that here; without it the client's line parsing looks correct in tests
+      // and mis-reads every acknowledged value on real hardware.
+      this.controller.enqueue(this.encoder.encode(text.replace(/\n/g, '\r\n')))
     } catch {
       // Stream closed by the client's release path.
     }

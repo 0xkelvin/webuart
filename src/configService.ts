@@ -144,6 +144,11 @@ class AtSerial {
   /**
    * Read the rest of the line that follows `marker`, searching from `fromMark`.
    * Returns null when the marker (or its terminating newline) has not arrived.
+   *
+   * The firmware prints "\r\n" itself, and the ESP-IDF console
+   * (CONFIG_NEWLIB_STDOUT_LINE_ENDING_CRLF) expands that "\n" again, so a line
+   * actually ends "...value\r\r\n" on the wire. Terminate on the "\n" and drop
+   * every trailing CR, otherwise the extra one lands inside the value.
    */
   readLineAfter(marker: string, fromMark = 0): string | null {
     const from = Math.max(0, this.indexFor(fromMark) - marker.length)
@@ -152,11 +157,11 @@ class AtSerial {
       return null
     }
     const valueStart = at + marker.length
-    const end = this.buffer.indexOf('\r\n', valueStart)
+    const end = this.buffer.indexOf('\n', valueStart)
     if (end < 0) {
       return null
     }
-    return this.buffer.slice(valueStart, end)
+    return this.buffer.slice(valueStart, end).replace(/\r+$/, '')
   }
 
   /** Wait for `keyword` to appear anywhere from `fromMark` onwards. */
@@ -502,15 +507,18 @@ export const applyConfig = async (options: ApplyConfigOptions): Promise<boolean>
     reportProgress('Entered AT mode', 'write')
 
     // Step 5: informational AT+VER and AT+MAC. Best-effort — don't bail on miss.
+    // Wait on the acknowledgement itself: the console's doubled CR means a line
+    // ends "\r\r\n", so a blank line reads "\r\n\r\r\n" and never contains
+    // "\r\n\r\n" — waiting for that just burns the full timeout.
     {
       const mark = serial.mark()
       await serial.writeText('AT+VER\r\n')
-      await serial.waitForString('\r\n\r\n', 1500, mark, shouldCancel)
+      await serial.waitForString('<< VER=', 1500, mark, shouldCancel)
     }
     {
       const mark = serial.mark()
       await serial.writeText('AT+MAC\r\n')
-      await serial.waitForString('\r\n\r\n', 1500, mark, shouldCancel)
+      await serial.waitForString('<< MAC=', 1500, mark, shouldCancel)
     }
 
     // Step 6: send mandatory metadata keys.
