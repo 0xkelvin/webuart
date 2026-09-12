@@ -151,6 +151,39 @@ docker compose up -d --build
 6. View RX data in terminal panel.
 7. Type TX data and click Send.
 
+## Radar firmware (IWR6843) — flash through the ESP32 bridge
+
+The **Radar** tab flashes a TI IWR6843 image on a GM1000 carrier board without any
+soldering-iron, UniFlash or Python: it is a browser port of
+`gm_radar/tools/flash_iwr6843_bridge.py`.
+
+How it works: the board's `U6` mux routes the radar's flash UART to the ESP32, so the
+tab talks to the ESP32's console, enters its boot-time AT window, sends
+`AT+RADARBOOT=BRIDGE`, and the ESP32 puts the radar into its ROM bootloader and turns
+itself into a transparent byte bridge. The tab then speaks TI's serial flashing
+protocol (SYNC packets, `0xCC` acknowledgements, 240-byte data packets) directly to
+the ROM, and finishes with `AT+RADARBOOT=OFF` + `AT+RST` so the board comes back in
+normal operation.
+
+1. Plug in **both** USB cables — the radar's own USB is its power supply.
+2. Open the **Radar** tab, choose the route:
+   - **Auto** for boards with the `GPIO4 → 1 kΩ → S1/SOP2` wire (nothing to press);
+   - **Buttons** for unmodified boards: when the tab asks, hold `S1`, tap `S2`, keep
+     `S1` held about a second, release, then press **continue**.
+3. **Load .bin** — the MSS multicore image, e.g. `vital_1_0_demo-<hash>-<size>.bin`.
+   Images named `BROKEN-do-not-flash-*` are refused.
+4. **Connect** and pick the **ESP32 console port** (CH343), never the radar's CP2105.
+5. **Flash radar**. About 80 s for a 620 KB image; the console shows every step.
+
+Notes:
+- The ESP32 raises its console to 921600 once the bridge is up. Web Serial cannot
+  change baud in place, so the tab closes and reopens the port at 921600 — the same
+  thing esptool-js does for its own baud switch.
+- Cancel is honoured between data packets and still runs the cleanup, so a cancelled
+  flash never leaves the board parked in bridge mode.
+- `src/radarFlashService.test.ts` drives the whole flow against a fake board that
+  models the auto-reset circuit, the baud jump and TI's packet framing.
+
 ## Known limitations
 
 - Safari support is limited.

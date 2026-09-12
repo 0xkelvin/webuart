@@ -1,3 +1,5 @@
+import { reacquirePortAfterReset } from './serialService'
+
 export type ResetMode = 'rts_dtr' | 'dtr' | 'usb_jtag' | 'none'
 export type EndCommand = 'cont' | 'rst'
 
@@ -207,6 +209,19 @@ class AtSerial {
       await sleep(40)
     }
     return null
+  }
+
+  /** Any bytes at all from the board, i.e. the read path works. */
+  sawDeviceOutput(): boolean {
+    return this.trimmedChars + this.buffer.length > 0
+  }
+
+  /**
+   * The firmware echoes every line it reads as `=> <line>` before acting on it
+   * (`at_cmd.c`), so an echo is proof our bytes reached the parser.
+   */
+  sawCommandEcho(): boolean {
+    return this.buffer.indexOf('=> ') >= 0 || this.buffer.indexOf('<= OK') >= 0
   }
 
   async write(bytes: Uint8Array): Promise<void> {
@@ -448,26 +463,41 @@ export const applyConfig = async (options: ApplyConfigOptions): Promise<boolean>
     workingPort = await resetViaUsbJtag(port, baudRate)
   }
 
+  // Step 2: trigger a reset (unless usb_jtag, which already did it above), then
+  // reopen the port before claiming its streams. The reopen has to happen while
+  // nothing holds a reader or writer, so it comes before AtSerial is built.
+  if (resetMode === 'rts_dtr') {
+    status('Resetting board via RTS/DTR sequence...')
+    await resetViaRtsDtr(workingPort)
+  } else if (resetMode === 'dtr') {
+    status('Resetting board via DTR-only toggle...')
+    await resetViaDtrOnly(workingPort)
+  } else if (resetMode === 'none') {
+    status('Manual reset mode: press the RESET button on the board now.')
+  }
+  if (resetMode !== 'none') {
+    await reacquirePortAfterReset(workingPort, baudRate, { onStatus: status })
+  }
+
   const serial = new AtSerial(workingPort)
   serial.onData(logger.onDeviceData)
 
   try {
-    // Step 2: trigger a reset (unless usb_jtag, which already did it above).
-    if (resetMode === 'rts_dtr') {
-      status('Resetting board via RTS/DTR sequence...')
-      await resetViaRtsDtr(workingPort)
-    } else if (resetMode === 'dtr') {
-      status('Resetting board via DTR-only toggle...')
-      await resetViaDtrOnly(workingPort)
-    } else if (resetMode === 'none') {
-      status('Manual reset mode: press the RESET button on the board now.')
-    }
 
     // Step 3 + 4: wait for bootInit() marker, then spam AT until OK.
     status('Waiting for boot + AT window...')
     const MAX_TRIES = 5
     let enteredAt = false
-    for (let attempt = 1; attempt <= MAX_TRIES; attempt += 1) {
+
+    // Reopening the port costs a moment, and the banner can go by while the
+    // device is re-enumerating. Probe straight away rather than spending the
+    // full bootInit() wait on a window that is already open: on an Ethernet
+    // board this answers within a few hundred milliseconds.
+    if (resetMode !== 'none' && (await probeAtUntilOk(serial, 3000, shouldCancel))) {
+      enteredAt = true
+    }
+
+    for (let attempt = 1; !enteredAt && attempt <= MAX_TRIES; attempt += 1) {
       if (shouldCancel?.()) {
         throw new CancellationError()
       }
@@ -500,6 +530,23 @@ export const applyConfig = async (options: ApplyConfigOptions): Promise<boolean>
         `Could not enter AT mode after ${MAX_TRIES} attempts. ` +
           'Make sure the board is running firmware (not in bootloader) and the baud rate is 115200.',
       )
+      // The board's own output arriving while nothing we send is echoed means
+      // this port cannot carry input, which is a different problem from a
+      // missed window and has a different answer: the wrong one of the board's
+      // two USB ports was picked. On the WiFi build only the bridge port
+      // accepts AT; the Espressif port is a secondary console and prints only.
+      if (serial.sawDeviceOutput() && !serial.sawCommandEcho()) {
+        const vendorId = workingPort.getInfo?.().usbVendorId
+        error(
+          'The board is talking to us but never echoed a command, so this port is ' +
+            'output-only for this firmware. Pick the other USB port of the board: ' +
+            'the Ethernet build wants the Espressif port (VID 0x303a), the WiFi build ' +
+            'wants the USB-UART bridge (VID 0x1a86 or 0x10c4).' +
+            (vendorId !== undefined
+              ? ` This port is VID 0x${vendorId.toString(16).padStart(4, '0')}.`
+              : ''),
+        )
+      }
       return false
     }
 

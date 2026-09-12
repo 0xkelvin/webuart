@@ -5,6 +5,9 @@ declare global {
   interface Navigator {
     serial?: {
       requestPort: () => Promise<SerialPort>
+      /** Fired when a port the page may use appears or disappears. */
+      addEventListener?: (type: string, listener: () => void) => void
+      removeEventListener?: (type: string, listener: () => void) => void
     }
   }
 

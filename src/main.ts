@@ -35,6 +35,15 @@ import {
   type ResetMode,
 } from './configService'
 import {
+  closeRadarPort,
+  flashRadarImage,
+  isBrokenImageName,
+  requestRadarPort,
+  type RadarFlashLogger,
+  type RadarFlashProgress,
+  type RadarFlashRoute,
+} from './radarFlashService'
+import {
   extractFirmwareZip,
   type FirmwareFileEntry,
   type FirmwareFlashParams,
@@ -208,6 +217,18 @@ app.innerHTML = `
       >
         <span class="appTabIcon" aria-hidden="true">⚙</span>
         <span class="appTabLabel">Config</span>
+      </button>
+      <button
+        id="radarTabBtn"
+        class="appTab"
+        type="button"
+        role="tab"
+        aria-selected="false"
+        aria-controls="radarView"
+        data-tab="radar"
+      >
+        <span class="appTabIcon" aria-hidden="true">📡</span>
+        <span class="appTabLabel">Radar</span>
       </button>
     </nav>
 
@@ -439,6 +460,93 @@ app.innerHTML = `
             </div>
           </div>
           <pre id="configConsoleOutput" class="flashConsoleOutput" aria-live="polite"></pre>
+        </section>
+      </div>
+    </section>
+
+    <section
+      id="radarView"
+      class="tabPanel configView radarView hidden"
+      role="tabpanel"
+      aria-labelledby="radarTabBtn"
+      aria-hidden="true"
+    >
+      <div class="flashLayout configLayout">
+        <header class="flashHeader configHeader card">
+          <div class="flashHeaderRow">
+            <h2 class="flashTitle">📡 Radar Firmware (IWR6843)</h2>
+            <div class="flashHeaderMeta">
+              <label
+                class="flashInlineField"
+                title="Auto: the ESP32 drives SOP2 through the GPIO4 → 1 kΩ → S1 wire. Buttons: you hold S1 and tap S2 when prompted."
+              >
+                <span>Route</span>
+                <select id="radarRouteSelect">
+                  <option value="auto" selected>Auto (GPIO4 → SOP2 wire)</option>
+                  <option value="buttons">Buttons (S1 / S2)</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <p class="flashHelp">
+            Flash a radar <code>.bin</code> through the ESP32 console port. Mirrors
+            <code>tools/flash_iwr6843_bridge.py</code>: AT window → <code>AT+RADARBOOT</code>
+            bridge → TI ROM loader at 921600 → cleanup. About 80 s for a 620 KB image.
+          </p>
+          <p class="flashBootHint configBootHint">
+            <strong>Both USB cables must be plugged in.</strong> Pick the ESP32 console port
+            (CH343), not the radar's own CP2105 port — the radar's USB only powers it.
+            No Terminal pane may hold the same port.
+          </p>
+        </header>
+
+        <section class="flashFilesCard configFilesCard card">
+          <div class="flashFilesHeader">
+            <h3>Radar image</h3>
+            <div class="flashFilesActions">
+              <label class="ghost mini configFileLabel" for="radarFileInput">Load .bin</label>
+              <input id="radarFileInput" type="file" accept=".bin,application/octet-stream" hidden />
+              <button id="radarClearFileBtn" class="ghost mini" type="button" disabled>Clear</button>
+            </div>
+          </div>
+          <p id="radarFileStatus" class="flashZipStatus" aria-live="polite">
+            Load the MSS multicore image, e.g. <code>vital_1_0_demo-BA9283A7-621508.bin</code>.
+          </p>
+        </section>
+
+        <section class="flashActionsCard configActionsCard card">
+          <div class="flashActionsRow">
+            <button id="radarConnectBtn" class="primary" type="button">Connect</button>
+            <button id="radarDisconnectBtn" class="ghost" type="button" disabled>Disconnect</button>
+            <button id="radarStartBtn" class="primary configApplyBtn" type="button" disabled>
+              📡 Flash radar
+            </button>
+            <button id="radarButtonsDoneBtn" class="primary" type="button" hidden>
+              S1 / S2 pressed — continue
+            </button>
+            <button id="radarCancelBtn" class="ghost" type="button" hidden>Cancel</button>
+          </div>
+          <div id="radarPortInfo" class="flashChipInfo configPortInfo hidden" aria-live="polite"></div>
+          <div id="radarStatus" class="flashProgress configStatus hidden" aria-live="polite">
+            <div class="flashProgressLabel">
+              <span id="radarStatusMessage">Idle</span>
+              <span id="radarStatusPercent">0%</span>
+            </div>
+            <div class="flashProgressBar">
+              <div id="radarStatusFill" class="flashProgressFill" style="width: 0%"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="flashConsoleCard configConsoleCard card">
+          <div class="flashConsoleHeader">
+            <h3>Console</h3>
+            <div class="flashConsoleActions">
+              <button id="radarCopyLogBtn" class="ghost mini" type="button">Copy</button>
+              <button id="radarClearLogBtn" class="ghost mini" type="button">Clear</button>
+            </div>
+          </div>
+          <pre id="radarConsoleOutput" class="flashConsoleOutput" aria-live="polite"></pre>
         </section>
       </div>
     </section>
@@ -801,6 +909,25 @@ const configStatusFillEl = document.querySelector<HTMLElement>('#configStatusFil
 const configConsoleOutputEl = document.querySelector<HTMLElement>('#configConsoleOutput')
 const configCopyLogBtn = document.querySelector<HTMLButtonElement>('#configCopyLogBtn')
 const configClearLogBtn = document.querySelector<HTMLButtonElement>('#configClearLogBtn')
+const radarTabBtn = document.querySelector<HTMLButtonElement>('#radarTabBtn')
+const radarViewEl = document.querySelector<HTMLElement>('#radarView')
+const radarRouteSelect = document.querySelector<HTMLSelectElement>('#radarRouteSelect')
+const radarFileInput = document.querySelector<HTMLInputElement>('#radarFileInput')
+const radarClearFileBtn = document.querySelector<HTMLButtonElement>('#radarClearFileBtn')
+const radarFileStatusEl = document.querySelector<HTMLElement>('#radarFileStatus')
+const radarConnectBtn = document.querySelector<HTMLButtonElement>('#radarConnectBtn')
+const radarDisconnectBtn = document.querySelector<HTMLButtonElement>('#radarDisconnectBtn')
+const radarStartBtn = document.querySelector<HTMLButtonElement>('#radarStartBtn')
+const radarButtonsDoneBtn = document.querySelector<HTMLButtonElement>('#radarButtonsDoneBtn')
+const radarCancelBtn = document.querySelector<HTMLButtonElement>('#radarCancelBtn')
+const radarPortInfoEl = document.querySelector<HTMLElement>('#radarPortInfo')
+const radarStatusEl = document.querySelector<HTMLElement>('#radarStatus')
+const radarStatusMessageEl = document.querySelector<HTMLElement>('#radarStatusMessage')
+const radarStatusPercentEl = document.querySelector<HTMLElement>('#radarStatusPercent')
+const radarStatusFillEl = document.querySelector<HTMLElement>('#radarStatusFill')
+const radarConsoleOutputEl = document.querySelector<HTMLElement>('#radarConsoleOutput')
+const radarCopyLogBtn = document.querySelector<HTMLButtonElement>('#radarCopyLogBtn')
+const radarClearLogBtn = document.querySelector<HTMLButtonElement>('#radarClearLogBtn')
 const paneMenuEl = document.querySelector<HTMLDivElement>('#paneMenu')
 const quickCommandMenuEl = document.querySelector<HTMLDivElement>('#quickCommandMenu')
 const timerCommandMenuEl = document.querySelector<HTMLDivElement>('#timerCommandMenu')
@@ -896,6 +1023,25 @@ if (
   !configConsoleOutputEl ||
   !configCopyLogBtn ||
   !configClearLogBtn ||
+  !radarTabBtn ||
+  !radarViewEl ||
+  !radarRouteSelect ||
+  !radarFileInput ||
+  !radarClearFileBtn ||
+  !radarFileStatusEl ||
+  !radarConnectBtn ||
+  !radarDisconnectBtn ||
+  !radarStartBtn ||
+  !radarButtonsDoneBtn ||
+  !radarCancelBtn ||
+  !radarPortInfoEl ||
+  !radarStatusEl ||
+  !radarStatusMessageEl ||
+  !radarStatusPercentEl ||
+  !radarStatusFillEl ||
+  !radarConsoleOutputEl ||
+  !radarCopyLogBtn ||
+  !radarClearLogBtn ||
   !paneMenuEl ||
   !quickCommandMenuEl ||
   !timerCommandMenuEl ||
@@ -3469,7 +3615,7 @@ let flashPlanParams: FirmwareFlashParams = {}
 let flashPlanChip: string | null = null
 let flashConsoleLines: string[] = []
 let flashIsBusy = false
-type AppTab = 'terminal' | 'flash' | 'config'
+type AppTab = 'terminal' | 'flash' | 'config' | 'radar'
 let activeAppTab: AppTab = 'terminal'
 
 const refreshFlashControls = () => {
@@ -3971,23 +4117,31 @@ const setActiveAppTab = (tab: AppTab) => {
   const isTerminal = tab === 'terminal'
   const isFlash = tab === 'flash'
   const isConfig = tab === 'config'
+  const isRadar = tab === 'radar'
   terminalTabBtn.classList.toggle('active', isTerminal)
   terminalTabBtn.setAttribute('aria-selected', String(isTerminal))
   flashTabBtn.classList.toggle('active', isFlash)
   flashTabBtn.setAttribute('aria-selected', String(isFlash))
   configTabBtn.classList.toggle('active', isConfig)
   configTabBtn.setAttribute('aria-selected', String(isConfig))
+  radarTabBtn.classList.toggle('active', isRadar)
+  radarTabBtn.setAttribute('aria-selected', String(isRadar))
   terminalViewEl.classList.toggle('hidden', !isTerminal)
   terminalViewEl.setAttribute('aria-hidden', String(!isTerminal))
   flashViewEl.classList.toggle('hidden', !isFlash)
   flashViewEl.setAttribute('aria-hidden', String(!isFlash))
   configViewEl.classList.toggle('hidden', !isConfig)
   configViewEl.setAttribute('aria-hidden', String(!isConfig))
+  radarViewEl.classList.toggle('hidden', !isRadar)
+  radarViewEl.setAttribute('aria-hidden', String(!isRadar))
   if (isFlash) {
     refreshFlashControls()
   }
   if (isConfig) {
     refreshConfigControls()
+  }
+  if (isRadar) {
+    refreshRadarControls()
   }
 }
 
@@ -4001,6 +4155,10 @@ flashTabBtn.addEventListener('click', () => {
 
 configTabBtn.addEventListener('click', () => {
   setActiveAppTab('config')
+})
+
+radarTabBtn.addEventListener('click', () => {
+  setActiveAppTab('radar')
 })
 
 flashZipInputEl.addEventListener('change', () => {
@@ -4433,6 +4591,346 @@ configCopyLogBtn.addEventListener('click', () => {
 configClearLogBtn.addEventListener('click', () => {
   configConsoleLines = []
   configConsoleOutputEl.textContent = ''
+})
+
+// ============================================================================
+// Radar tab: flash an IWR6843 image through the ESP32's console bridge
+// ============================================================================
+
+type RadarSession = {
+  port: SerialPort | null
+  isFlashing: boolean
+  shouldCancel: boolean
+  image: { name: string; bytes: Uint8Array } | null
+  /** Set while the buttons route waits for the operator; resolving it continues the flash. */
+  buttonsResolve: (() => void) | null
+}
+
+const radarSession: RadarSession = {
+  port: null,
+  isFlashing: false,
+  shouldCancel: false,
+  image: null,
+  buttonsResolve: null,
+}
+
+let radarConsoleLines: string[] = []
+
+const appendRadarLog = (line: string) => {
+  radarConsoleLines.push(line)
+  if (radarConsoleLines.length > 4000) {
+    radarConsoleLines = radarConsoleLines.slice(-3000)
+  }
+  radarConsoleOutputEl.textContent = radarConsoleLines.join('\n')
+  radarConsoleOutputEl.scrollTop = radarConsoleOutputEl.scrollHeight
+}
+
+const writeRadarLogPartial = (chunk: string) => {
+  if (radarConsoleLines.length === 0) {
+    radarConsoleLines.push('')
+  }
+  const pieces = chunk.split(/\r?\n/)
+  radarConsoleLines[radarConsoleLines.length - 1] += pieces[0]
+  for (let i = 1; i < pieces.length; i += 1) {
+    radarConsoleLines.push(pieces[i])
+  }
+  if (radarConsoleLines.length > 4000) {
+    radarConsoleLines = radarConsoleLines.slice(-3000)
+  }
+  radarConsoleOutputEl.textContent = radarConsoleLines.join('\n')
+  radarConsoleOutputEl.scrollTop = radarConsoleOutputEl.scrollHeight
+}
+
+const setRadarStatus = (
+  state: 'idle' | 'busy' | 'success' | 'error',
+  message?: string,
+): void => {
+  radarStatusEl.classList.remove('hidden')
+  radarStatusEl.classList.toggle('isSuccess', state === 'success')
+  radarStatusEl.classList.toggle('isError', state === 'error')
+  radarStatusEl.classList.toggle('isBusy', state === 'busy')
+  radarStatusMessageEl.textContent = message ?? (state === 'idle' ? 'Idle' : state)
+}
+
+const setRadarProgressPercent = (percent: number): void => {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)))
+  radarStatusFillEl.style.width = `${clamped}%`
+  radarStatusPercentEl.textContent = `${clamped}%`
+}
+
+const updateRadarProgress = (progress: RadarFlashProgress): void => {
+  const percent = progress.total > 0 ? (progress.sent / progress.total) * 100 : 0
+  setRadarProgressPercent(progress.phase === 'done' ? 100 : percent)
+  const label =
+    progress.phase === 'at'
+      ? 'Waiting for the ESP32 AT window'
+      : progress.phase === 'bridge'
+        ? 'Arming the radar bridge'
+        : progress.phase === 'buttons'
+          ? 'Hold S1, tap S2, release S1, then press continue'
+          : progress.phase === 'ping'
+            ? 'Pinging the ROM bootloader'
+            : progress.phase === 'download'
+              ? `Sending ${progress.sent}/${progress.total} B · ${progress.bytesPerSecond.toFixed(0)} B/s`
+              : progress.phase === 'close'
+                ? 'Closing the image'
+                : progress.phase === 'cleanup'
+                  ? 'Releasing the radar, rebooting the ESP32'
+                  : 'Done'
+  radarStatusMessageEl.textContent = label
+}
+
+const showRadarPortInfo = (text: string | null): void => {
+  if (!text) {
+    radarPortInfoEl.classList.add('hidden')
+    radarPortInfoEl.textContent = ''
+    return
+  }
+  radarPortInfoEl.classList.remove('hidden')
+  radarPortInfoEl.textContent = text
+}
+
+const setRadarFileStatus = (text: string, tone: 'ok' | 'error' | null): void => {
+  radarFileStatusEl.textContent = text
+  radarFileStatusEl.classList.toggle('isOk', tone === 'ok')
+  radarFileStatusEl.classList.toggle('isError', tone === 'error')
+}
+
+const refreshRadarControls = (): void => {
+  const hasPort = radarSession.port !== null
+  const isBusy = radarSession.isFlashing
+  const anyTerminalConnected = Array.from(panes.values()).some((pane) => pane.isConnected)
+  const otherTabHoldsPort = configSession.port !== null || flashSession.port !== null
+
+  radarConnectBtn.disabled = isBusy || hasPort || anyTerminalConnected || otherTabHoldsPort
+  radarConnectBtn.textContent = anyTerminalConnected
+    ? 'Disconnect terminal first'
+    : otherTabHoldsPort
+      ? 'Release the Flash/Config port first'
+      : hasPort
+        ? 'Connected'
+        : 'Connect'
+  radarDisconnectBtn.disabled = isBusy || !hasPort
+  radarStartBtn.disabled = isBusy || !hasPort || radarSession.image === null
+  radarButtonsDoneBtn.hidden = radarSession.buttonsResolve === null
+  radarCancelBtn.hidden = !isBusy
+  radarCancelBtn.disabled = !isBusy || radarSession.shouldCancel
+
+  radarRouteSelect.disabled = isBusy
+  radarFileInput.disabled = isBusy
+  radarClearFileBtn.disabled = isBusy || radarSession.image === null
+}
+
+const radarConnect = async (): Promise<void> => {
+  if (radarSession.port !== null) {
+    return
+  }
+  if (!navigator.serial) {
+    appendRadarLog('Web Serial unavailable in this browser.')
+    setRadarStatus('error', 'Web Serial unavailable')
+    return
+  }
+  try {
+    setRadarStatus('busy', 'Requesting serial port...')
+    appendRadarLog('Requesting serial port...')
+    const port = await requestRadarPort()
+    radarSession.port = port
+    const info = port.getInfo?.() ?? {}
+    const vid =
+      typeof info.usbVendorId === 'number'
+        ? `VID 0x${info.usbVendorId.toString(16).padStart(4, '0')}`
+        : null
+    const pid =
+      typeof info.usbProductId === 'number'
+        ? `PID 0x${info.usbProductId.toString(16).padStart(4, '0')}`
+        : null
+    const portLabel = [vid, pid].filter(Boolean).join(' · ') || 'Serial port'
+    showRadarPortInfo(`Port ready · ${portLabel}`)
+    appendRadarLog(`Port acquired (${portLabel}). Load a radar .bin, then Flash radar.`)
+    setRadarStatus('idle', 'Port ready')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to request port'
+    if (/no port selected/i.test(message)) {
+      appendRadarLog('Port selection cancelled by user.')
+      setRadarStatus('idle', 'Cancelled')
+    } else {
+      appendRadarLog(`Connect failed: ${message}`)
+      setRadarStatus('error', message)
+    }
+  } finally {
+    refreshRadarControls()
+  }
+}
+
+const radarDisconnect = async (): Promise<void> => {
+  if (radarSession.port === null) {
+    return
+  }
+  if (radarSession.isFlashing) {
+    appendRadarLog('Cannot disconnect while a flash is in progress. Use Cancel first.')
+    return
+  }
+  const port = radarSession.port
+  radarSession.port = null
+  try {
+    await closeRadarPort(port)
+    appendRadarLog('Port released.')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'close failed'
+    appendRadarLog(`Disconnect warning: ${message}`)
+  }
+  showRadarPortInfo(null)
+  setRadarStatus('idle')
+  refreshRadarControls()
+}
+
+const radarStart = async (): Promise<void> => {
+  if (!radarSession.port || radarSession.isFlashing || !radarSession.image) {
+    return
+  }
+  const route = radarRouteSelect.value as RadarFlashRoute
+  const { name, bytes } = radarSession.image
+
+  radarSession.isFlashing = true
+  radarSession.shouldCancel = false
+  refreshRadarControls()
+  setRadarStatus('busy', 'Waiting for the ESP32 AT window...')
+  setRadarProgressPercent(0)
+
+  appendRadarLog(`${'='.repeat(60)}`)
+  appendRadarLog('IWR6843 flash through the ESP32 bridge')
+  appendRadarLog(`  Image : ${name}`)
+  appendRadarLog(`  Size  : ${formatFlashFileSize(bytes.length)} (${bytes.length} bytes)`)
+  appendRadarLog(`  Route : ${route === 'auto' ? 'auto (GPIO4 → SOP2 wire)' : 'buttons (S1 / S2)'}`)
+  appendRadarLog(`${'='.repeat(60)}`)
+
+  const logger: RadarFlashLogger = {
+    onDeviceData: writeRadarLogPartial,
+    onStatus: (line) => appendRadarLog(line),
+    onWarn: (line) => appendRadarLog(`[WARN] ${line}`),
+    onError: (line) => appendRadarLog(`[ERROR] ${line}`),
+  }
+
+  const waitForButtons = () =>
+    new Promise<void>((resolve) => {
+      radarSession.buttonsResolve = () => {
+        radarSession.buttonsResolve = null
+        refreshRadarControls()
+        resolve()
+      }
+      refreshRadarControls()
+    })
+
+  try {
+    const ok = await flashRadarImage({
+      port: radarSession.port,
+      image: bytes,
+      imageName: name,
+      route,
+      logger,
+      shouldCancel: () => radarSession.shouldCancel,
+      onProgress: updateRadarProgress,
+      waitForButtons,
+    })
+    if (ok) {
+      setRadarProgressPercent(100)
+      setRadarStatus('success', 'Radar flashed. The ESP32 has rebooted and the radar is running the new image.')
+    } else {
+      setRadarStatus('error', 'Radar flash did not complete. See console.')
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'flash failed'
+    appendRadarLog(`Flash error: ${message}`)
+    setRadarStatus('error', message)
+  } finally {
+    radarSession.isFlashing = false
+    radarSession.shouldCancel = false
+    radarSession.buttonsResolve = null
+    refreshRadarControls()
+  }
+}
+
+radarRouteSelect.addEventListener('change', () => {
+  refreshRadarControls()
+})
+
+radarFileInput.addEventListener('change', () => {
+  const file = radarFileInput.files?.[0]
+  if (!file) {
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => {
+    const result = reader.result
+    if (!(result instanceof ArrayBuffer)) {
+      return
+    }
+    if (isBrokenImageName(file.name)) {
+      radarSession.image = null
+      setRadarFileStatus(`Refused "${file.name}": images with this name are known to brick the board.`, 'error')
+      appendRadarLog(`Refused "${file.name}" (BROKEN-do-not-flash).`)
+      refreshRadarControls()
+      return
+    }
+    radarSession.image = { name: file.name, bytes: new Uint8Array(result) }
+    setRadarFileStatus(`${file.name} · ${formatFlashFileSize(file.size)} (${file.size} bytes)`, 'ok')
+    appendRadarLog(`Loaded "${file.name}" (${file.size} bytes).`)
+    refreshRadarControls()
+  }
+  reader.onerror = () => {
+    appendRadarLog(`Failed to read "${file.name}": ${reader.error?.message ?? 'unknown error'}`)
+  }
+  reader.readAsArrayBuffer(file)
+  // Reset so the same file can be re-picked after a Clear.
+  radarFileInput.value = ''
+})
+
+radarClearFileBtn.addEventListener('click', () => {
+  radarSession.image = null
+  setRadarFileStatus('Load the MSS multicore image, e.g. vital_1_0_demo-BA9283A7-621508.bin.', null)
+  refreshRadarControls()
+})
+
+radarConnectBtn.addEventListener('click', () => {
+  void radarConnect()
+})
+
+radarDisconnectBtn.addEventListener('click', () => {
+  void radarDisconnect()
+})
+
+radarStartBtn.addEventListener('click', () => {
+  void radarStart()
+})
+
+radarButtonsDoneBtn.addEventListener('click', () => {
+  radarSession.buttonsResolve?.()
+})
+
+radarCancelBtn.addEventListener('click', () => {
+  if (!radarSession.isFlashing) {
+    return
+  }
+  radarSession.shouldCancel = true
+  appendRadarLog('Cancellation requested...')
+  // A cancel while waiting for the buttons must not leave the flow parked.
+  radarSession.buttonsResolve?.()
+  refreshRadarControls()
+})
+
+radarCopyLogBtn.addEventListener('click', () => {
+  const text = radarConsoleLines.join('\n')
+  if (!text) {
+    return
+  }
+  if (navigator.clipboard?.writeText) {
+    void navigator.clipboard.writeText(text)
+  }
+})
+
+radarClearLogBtn.addEventListener('click', () => {
+  radarConsoleLines = []
+  radarConsoleOutputEl.textContent = ''
 })
 
 const initialize = () => {
