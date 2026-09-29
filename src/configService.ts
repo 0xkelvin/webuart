@@ -52,6 +52,7 @@ export const CONFIG_AT_KEYS = [
   'REPORTINT',
   'RADARCONFIG',
   'REBOOTTIME',
+  'NTPADDR',
   'CFGFILE',
   'LOCALMODE',
   'CFGTIME',

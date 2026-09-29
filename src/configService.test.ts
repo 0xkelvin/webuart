@@ -189,6 +189,14 @@ describe('applyConfig against a gm_radar-behaving device', () => {
     expect(device.stored.get('TYPE')).toBe('WALL')
   })
 
+  it('REGRESSION: writes NTPADDR, which the firmware reads since fd18f42', async () => {
+    // It was missing from the whitelist, so a site's NTP server was skipped and the
+    // device fell back to the public pools with no sign of it on the device.
+    const device = new FakeDevice()
+    await expect(run(device, { ...wallMountConfig, NTPADDR: '192.168.1.85' })).resolves.toBe(true)
+    expect(device.stored.get('NTPADDR')).toBe('192.168.1.85')
+  })
+
 })
 
 describe('parseJsonConfig', () => {
